@@ -21,7 +21,7 @@ gci server add prod \
 2. Initialize a stack
 
 ```bash
-gci init my_website
+gci init my_platform
 ```
 
 This creates `gci.toml` in the current directory.
@@ -29,7 +29,7 @@ This creates `gci.toml` in the current directory.
 Example shape:
 
 ```toml
-name = "bucceo"
+name = "my_platform"
 server = "prod"
 build_command = """
 docker build -t 127.0.0.1:41114/my_service .
@@ -45,7 +45,7 @@ build_forwards = [
 sync_paths = ["docker-compose.prod.yaml"]
 
 [driver_docker_swarm]
-stack_name = "bucceo"
+stack_name = "my_platform"
 log_services = ["app", "migrate"]
 compose_file = "docker-compose.prod.yaml"
 # migration_service = "migrate"
