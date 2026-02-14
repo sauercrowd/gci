@@ -54,15 +54,14 @@ var deployCmd = &cobra.Command{
 		}
 
 		baseDir := filepath.Dir(configPath)
-		if err := runLocalBuild(cmd.Context(), cmd, baseDir, cfg.BuildCommand); err != nil {
-			return err
-		}
-
 		target := gcissh.Target{
 			User:           srv.User,
 			Host:           srv.Host,
 			PrivateKeyPath: srv.PrivateKey,
 			Timeout:        deployConnectTimeout,
+		}
+		if err := runLocalBuild(cmd.Context(), cmd, baseDir, cfg.BuildCommand, target, cfg.BuildForwards); err != nil {
+			return err
 		}
 
 		remoteServiceDir := path.Join(srv.ServiceDir, cfg.Name)
@@ -90,8 +89,19 @@ func init() {
 	rootCmd.AddCommand(deployCmd)
 }
 
-func runLocalBuild(ctx context.Context, cmd *cobra.Command, baseDir, buildCommand string) error {
+func runLocalBuild(ctx context.Context, cmd *cobra.Command, baseDir, buildCommand string, target gcissh.Target, sshForwards []string) error {
 	fmt.Fprintln(cmd.OutOrStdout(), "running local build...")
+	if len(sshForwards) > 0 {
+		fmt.Fprintln(cmd.OutOrStdout(), "starting SSH forwards for build...")
+		for _, forward := range sshForwards {
+			fmt.Fprintf(cmd.OutOrStdout(), "  -L %s\n", forward)
+		}
+		session, err := gcissh.StartLocalForwards(ctx, target, sshForwards)
+		if err != nil {
+			return fmt.Errorf("failed to start build SSH forwards: %w", err)
+		}
+		defer session.Close()
+	}
 
 	scriptFile, err := os.CreateTemp("", "gci-build-*.sh")
 	if err != nil {

@@ -99,7 +99,7 @@ func (dockerSwarmDriver) Deploy(ctx context.Context, runner RemoteRunner, cfg Co
 		lastState = state
 		if stable {
 			fmt.Fprintln(stdout, "stack is stable")
-			return nil
+			break
 		}
 		fmt.Fprintf(stdout, "waiting for stack stability: %s\n", state)
 
@@ -112,6 +112,15 @@ func (dockerSwarmDriver) Deploy(ctx context.Context, runner RemoteRunner, cfg Co
 		case <-ticker.C:
 		}
 	}
+
+	if cfg.DriverDockerSwarm.PruneImagesEnabled() {
+		fmt.Fprintln(stdout, "pruning unused docker images...")
+		if err := runner.Stream(ctx, "docker image prune -f", stdout, stderr); err != nil {
+			return fmt.Errorf("failed to prune docker images: %w", err)
+		}
+	}
+
+	return nil
 }
 
 func (dockerSwarmDriver) Remove(ctx context.Context, runner RemoteRunner, cfg Config, remoteServiceDir string) error {

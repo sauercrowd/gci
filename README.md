@@ -19,7 +19,7 @@ The intended workflow is:
 
 ```bash
 gci server add prod \
-  --host ente-server \
+  --host your-server.example.com \
   --private-key ~/.ssh/id_rsa \
   --service-dir ./gci-deployments
 ```
@@ -50,15 +50,22 @@ Example shape:
 name = "bucceo"
 server = "prod"
 build_command = "go build ./..."
+
+# Optional: local TCP forwards active during build (SSH -L style)
+# build_forwards = [
+#   "127.0.0.1:5433:127.0.0.1:5432",
+# ]
+
 sync_paths = ["."]
 exclude_patterns = [".git", "node_modules", "__pycache__", "*.pyc"]
 
 [driver_docker_swarm]
 stack_name = "bucceo"
 log_services = ["app", "migrate"]
-compose_file = "docker-compose.yml"
+compose_file = "docker-compose.prod.yaml"
 # migration_service = "migrate"
 # migration_strict = true
+prune_images = true
 ```
 
 ## 3) Validate Before Deploy

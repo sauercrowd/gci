@@ -151,6 +151,12 @@ name = %q
 # Local build command (multiline strings are supported with ''' ... ''')
 build_command = %q
 
+# Optional: local TCP forwards active during build (SSH -L style)
+# build_forwards = [
+#   "127.0.0.1:5433:127.0.0.1:5432",
+#   "0.0.0.0:6380:127.0.0.1:6379",
+# ]
+#
 # Paths (relative to this file's directory) to sync to the remote host
 sync_paths = ["."]
 
@@ -172,7 +178,10 @@ migration_service = %q
 
 # Optional: fail deploy if migration trigger fails
 # migration_strict = true
-`, cfg.Name, serverLine, cfg.BuildCommand, cfg.DriverDockerSwarm.StackName, quotedCSV(logServices), cfg.DriverDockerSwarm.ComposeFile, cfg.DriverDockerSwarm.MigrationService)
+
+# Prune unused images after successful deploy
+prune_images = %t
+`, cfg.Name, serverLine, cfg.BuildCommand, cfg.DriverDockerSwarm.StackName, quotedCSV(logServices), cfg.DriverDockerSwarm.ComposeFile, cfg.DriverDockerSwarm.MigrationService, cfg.DriverDockerSwarm.PruneImagesEnabled())
 }
 
 func quotedCSV(values []string) string {

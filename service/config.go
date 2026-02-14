@@ -6,12 +6,14 @@ import (
 	"path/filepath"
 
 	"github.com/pelletier/go-toml/v2"
+	gcissh "github.com/sauercrowd/gci/ssh"
 )
 
 type Config struct {
 	Name              string             `toml:"name"`
 	Server            string             `toml:"server,omitempty"`
 	BuildCommand      string             `toml:"build_command"`
+	BuildForwards     []string           `toml:"build_forwards,omitempty"`
 	SyncPaths         []string           `toml:"sync_paths"`
 	ExcludePatterns   []string           `toml:"exclude_patterns,omitempty"`
 	DriverDockerSwarm *DockerSwarmConfig `toml:"driver_docker_swarm,omitempty"`
@@ -23,9 +25,16 @@ type DockerSwarmConfig struct {
 	ComposeFile      string   `toml:"compose_file"`
 	MigrationService string   `toml:"migration_service,omitempty"`
 	MigrationStrict  bool     `toml:"migration_strict,omitempty"`
+	PruneImages      *bool    `toml:"prune_images,omitempty"`
+}
+
+func (c DockerSwarmConfig) PruneImagesEnabled() bool {
+	return c.PruneImages == nil || *c.PruneImages
 }
 
 func NewDefaultConfig(serviceName, serverName string) Config {
+	pruneImages := true
+
 	return Config{
 		Name:         serviceName,
 		Server:       serverName,
@@ -44,6 +53,7 @@ func NewDefaultConfig(serviceName, serverName string) Config {
 			LogServices:      []string{"app", "migrate"},
 			ComposeFile:      "docker-compose.prod.yaml",
 			MigrationService: "migrate",
+			PruneImages:      &pruneImages,
 		},
 	}
 }
@@ -57,6 +67,11 @@ func (c Config) Validate() error {
 	}
 	if len(c.SyncPaths) == 0 {
 		return fmt.Errorf("at least one sync path is required")
+	}
+	for _, spec := range c.BuildForwards {
+		if _, err := gcissh.ParseForwardSpec(spec); err != nil {
+			return fmt.Errorf("invalid build_forwards entry %q: %w", spec, err)
+		}
 	}
 
 	driver, err := ResolveDriver(c)
