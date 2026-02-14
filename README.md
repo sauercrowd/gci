@@ -2,7 +2,9 @@
 
 ![](./logo.png)
 
-Fly.io like deployments for VMs, Raspberry Pis, or any SSH server, powered by docker swarm (which adds benefits even with a single node).
+Fly.io like deployments any VM, Raspberry Pi, or any SSH server.
+
+Just a CLI, only requires docker swarm and ssh on the remote host.
 
 ## Quickstart
 
