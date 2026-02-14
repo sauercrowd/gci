@@ -50,6 +50,8 @@ Example shape:
 ```toml
 name = "my_platform"
 server = "prod"
+
+## run locally
 build_command = """
 docker build -t 127.0.0.1:41114/my_service .
 docker push 127.0.0.1:41114/my_service
