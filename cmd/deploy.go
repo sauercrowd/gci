@@ -60,14 +60,22 @@ var deployCmd = &cobra.Command{
 			PrivateKeyPath: srv.PrivateKey,
 			Timeout:        deployConnectTimeout,
 		}
-		if err := runLocalBuild(cmd.Context(), cmd, baseDir, cfg.BuildCommand, target, cfg.BuildForwards); err != nil {
-			return err
+		if localBuild := strings.TrimSpace(cfg.BuildLocal); localBuild != "" {
+			if err := runLocalBuild(cmd.Context(), cmd, baseDir, localBuild, target, cfg.BuildForwards); err != nil {
+				return err
+			}
 		}
 
 		remoteServiceDir := path.Join(srv.ServiceDir, cfg.Name)
 		fmt.Fprintf(cmd.OutOrStdout(), "syncing files to %s:%s...\n", srv.Host, remoteServiceDir)
 		if err := gcissh.SyncPaths(cmd.Context(), target, baseDir, cfg.SyncPaths, cfg.ExcludePatterns, remoteServiceDir); err != nil {
 			return err
+		}
+
+		if remoteBuild := strings.TrimSpace(cfg.BuildRemote); remoteBuild != "" {
+			if err := runRemoteBuild(cmd.Context(), cmd, remoteBuild, target, remoteServiceDir); err != nil {
+				return err
+			}
 		}
 
 		driver, err := service.ResolveDriver(cfg)
@@ -151,12 +159,25 @@ func runLocalBuild(ctx context.Context, cmd *cobra.Command, baseDir, buildComman
 
 	if runErr != nil {
 		return fmt.Errorf(
-			"build command failed (check quoting in build_command): %w\nbuild_command:\n%s",
+			"local build command failed (check quoting in build_local): %w\nbuild_local:\n%s",
 			runErr,
 			numberedScript(buildCommand),
 		)
 	}
 
+	return nil
+}
+
+func runRemoteBuild(ctx context.Context, cmd *cobra.Command, buildCommand string, target gcissh.Target, remoteServiceDir string) error {
+	fmt.Fprintln(cmd.OutOrStdout(), "running remote build...")
+	script := fmt.Sprintf("cd %s\n%s\n", shellQuote(remoteServiceDir), buildCommand)
+	if err := gcissh.RunCommandStream(ctx, target, script, cmd.OutOrStdout(), cmd.ErrOrStderr()); err != nil {
+		return fmt.Errorf(
+			"remote build command failed (check quoting in build_remote): %w\nbuild_remote:\n%s",
+			err,
+			numberedScript(buildCommand),
+		)
+	}
 	return nil
 }
 
@@ -167,6 +188,13 @@ func numberedScript(script string) string {
 		fmt.Fprintf(&b, "%2d | %s\n", i+1, line)
 	}
 	return b.String()
+}
+
+func shellQuote(value string) string {
+	if value == "" {
+		return "''"
+	}
+	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
 }
 
 func resolveServiceConfigPath(explicitPath string) (string, error) {

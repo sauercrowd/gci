@@ -51,11 +51,17 @@ Example shape:
 name = "my_platform"
 server = "prod"
 
-## run locally
-build_command = """
+## run locally (optional)
+build_local = """
 docker build -t 127.0.0.1:41114/my_service .
 docker push 127.0.0.1:41114/my_service
 """
+
+# run remotely after sync (optional)
+# build_remote = """
+# docker build -t 127.0.0.1:41114/my_service .
+# docker push 127.0.0.1:41114/my_service
+# """
 
 # local TCP forwards active during build (SSH -L style)
 build_forwards = [
@@ -81,9 +87,10 @@ gci deploy
 ```
 
 Deploy does:
-1. run local `build_command`
+1. run local `build_local`
 2. sync `sync_paths` to `<service_dir>/<service_name>` over SSH (`tar.gz` stream)
-3. run driver deploy
+3. run remote `build_remote` in the synced remote service directory
+4. run driver deploy
 
 4. Observe Runtime
 
@@ -97,4 +104,10 @@ Logs:
 
 ```bash
 gci logs
+```
+
+LLM-oriented project and config reference:
+
+```bash
+gci docs
 ```

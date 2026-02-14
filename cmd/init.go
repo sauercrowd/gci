@@ -148,8 +148,14 @@ func renderInitConfig(cfg service.Config) string {
 	return fmt.Sprintf(`# Service identity
 name = %q
 %s
-# Local build command (multiline strings are supported with ''' ... ''')
-build_command = %q
+# Optional local build command (multiline strings are supported with ''' ... ''')
+build_local = %q
+
+# Optional remote build command executed after sync in the remote service directory
+# build_remote = """
+# docker build -t 127.0.0.1:41114/my_service .
+# docker push 127.0.0.1:41114/my_service
+# """
 
 # Optional: local TCP forwards active during build (SSH -L style)
 # build_forwards = [
@@ -181,7 +187,7 @@ migration_service = %q
 
 # Prune unused images after successful deploy
 prune_images = %t
-`, cfg.Name, serverLine, cfg.BuildCommand, cfg.DriverDockerSwarm.StackName, quotedCSV(logServices), cfg.DriverDockerSwarm.ComposeFile, cfg.DriverDockerSwarm.MigrationService, cfg.DriverDockerSwarm.PruneImagesEnabled())
+`, cfg.Name, serverLine, cfg.BuildLocal, cfg.DriverDockerSwarm.StackName, quotedCSV(logServices), cfg.DriverDockerSwarm.ComposeFile, cfg.DriverDockerSwarm.MigrationService, cfg.DriverDockerSwarm.PruneImagesEnabled())
 }
 
 func quotedCSV(values []string) string {

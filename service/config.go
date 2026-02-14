@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/pelletier/go-toml/v2"
 	gcissh "github.com/sauercrowd/gci/ssh"
@@ -12,7 +13,8 @@ import (
 type Config struct {
 	Name              string             `toml:"name"`
 	Server            string             `toml:"server,omitempty"`
-	BuildCommand      string             `toml:"build_command"`
+	BuildLocal        string             `toml:"build_local,omitempty"`
+	BuildRemote       string             `toml:"build_remote,omitempty"`
 	BuildForwards     []string           `toml:"build_forwards,omitempty"`
 	SyncPaths         []string           `toml:"sync_paths"`
 	ExcludePatterns   []string           `toml:"exclude_patterns,omitempty"`
@@ -36,9 +38,9 @@ func NewDefaultConfig(serviceName, serverName string) Config {
 	pruneImages := true
 
 	return Config{
-		Name:         serviceName,
-		Server:       serverName,
-		BuildCommand: "go build ./...",
+		Name:       serviceName,
+		Server:     serverName,
+		BuildLocal: "go build ./...",
 		SyncPaths: []string{
 			".",
 		},
@@ -62,8 +64,9 @@ func (c Config) Validate() error {
 	if c.Name == "" {
 		return fmt.Errorf("name is required")
 	}
-	if c.BuildCommand == "" {
-		return fmt.Errorf("build_command is required")
+
+	if strings.TrimSpace(c.BuildLocal) == "" && strings.TrimSpace(c.BuildRemote) == "" {
+		return fmt.Errorf("at least one of build_local or build_remote is required")
 	}
 	if len(c.SyncPaths) == 0 {
 		return fmt.Errorf("at least one sync path is required")
