@@ -18,10 +18,13 @@ docker run --name local-registry -p 127.0.0.1:41114:127.0.0.1:5000 registry:2
 </details>
 <details>
 <summary>Installation</summary>
+
 Only needed on the client, there is no additional software needed on the server
+
 ```
 go install https://github.com/sauercrowd/gci
 ```
+
 </details>
 
 1. Register a server (the remote VM, needs to have docker swarm installed and initalized)
