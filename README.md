@@ -28,6 +28,7 @@ Notes:
 - `--user` defaults to your current user.
 - `--service-dir` defaults to `./gci-deployments`.
 - `--skip-check` skips the SSH connectivity check during add.
+- SSH host key verification is strict; target hosts must exist in your `known_hosts`.
 
 List and inspect servers:
 

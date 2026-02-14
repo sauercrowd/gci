@@ -3,6 +3,7 @@ package ssh
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	cryptossh "golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/knownhosts"
 )
 
 type Target struct {
@@ -120,10 +122,15 @@ func Dial(ctx context.Context, target Target) (*cryptossh.Client, error) {
 		return nil, fmt.Errorf("failed to parse private key %q: %w", privateKeyPath, err)
 	}
 
+	hostKeyCallback, knownHostsPath, err := newHostKeyCallback()
+	if err != nil {
+		return nil, err
+	}
+
 	clientConfig := &cryptossh.ClientConfig{
 		User:            target.User,
 		Auth:            []cryptossh.AuthMethod{cryptossh.PublicKeys(signer)},
-		HostKeyCallback: cryptossh.InsecureIgnoreHostKey(),
+		HostKeyCallback: hostKeyCallback,
 	}
 
 	if target.Timeout > 0 {
@@ -140,10 +147,63 @@ func Dial(ctx context.Context, target Target) (*cryptossh.Client, error) {
 	cconn, chans, reqs, err := cryptossh.NewClientConn(conn, address, clientConfig)
 	if err != nil {
 		_ = conn.Close()
+		var keyErr *knownhosts.KeyError
+		if errors.As(err, &keyErr) {
+			if len(keyErr.Want) == 0 {
+				return nil, fmt.Errorf("host key for %q is unknown (known_hosts=%s); verify and add it first (for example: ssh-keyscan -H %q >> ~/.ssh/known_hosts)", address, knownHostsPath, stripPort(address))
+			}
+			return nil, fmt.Errorf("host key mismatch for %q (known_hosts=%s); possible MITM or host key rotation", address, knownHostsPath)
+		}
 		return nil, fmt.Errorf("failed SSH handshake with %q: %w", address, err)
 	}
 
 	return cryptossh.NewClient(cconn, chans, reqs), nil
+}
+
+func newHostKeyCallback() (cryptossh.HostKeyCallback, string, error) {
+	knownHostsFiles, err := existingKnownHostsFiles()
+	if err != nil {
+		return nil, "", err
+	}
+	if len(knownHostsFiles) == 0 {
+		return nil, "", fmt.Errorf("no known_hosts file found; expected one of: ~/.ssh/known_hosts, /etc/ssh/ssh_known_hosts")
+	}
+
+	callback, err := knownhosts.New(knownHostsFiles...)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to read known_hosts (%s): %w", strings.Join(knownHostsFiles, ", "), err)
+	}
+	return callback, strings.Join(knownHostsFiles, ", "), nil
+}
+
+func existingKnownHostsFiles() ([]string, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve home directory for known_hosts: %w", err)
+	}
+
+	candidates := []string{
+		filepath.Join(homeDir, ".ssh", "known_hosts"),
+		"/etc/ssh/ssh_known_hosts",
+		"/etc/ssh/ssh_known_hosts2",
+	}
+
+	files := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		if _, err := os.Stat(candidate); err == nil {
+			files = append(files, candidate)
+		}
+	}
+
+	return files, nil
+}
+
+func stripPort(address string) string {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return address
+	}
+	return host
 }
 
 func withDefaultPort(host string) string {
