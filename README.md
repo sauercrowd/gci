@@ -6,11 +6,24 @@ Fly.io like deployments for VMs, Raspberry Pis, or any SSH server, powered by do
 
 ## Quickstart
 
-Prerequisites:
-- any server with ssh and docker swarm enabled+initialized
-- a docker registry, e.g. start one with `docker run --name local-registry -p 127.0.0.1:41114:127.0.0.1:5000 registry:2`
+<details>
+<summary>Prerequisites</summary>
 
-1. Register a server (our VM, needs to have docker swarm installed and initalized)
+- any server with ssh and docker swarm enabled+initialized
+- a docker registry. you can just start one on the remote server with 
+```
+docker run --name local-registry -p 127.0.0.1:41114:127.0.0.1:5000 registry:2
+```
+
+</details>
+<details>
+<summary>Installation</summary>
+```
+go install https://github.com/sauercrowd/gci
+```
+</details>
+
+1. Register a server (the remote VM, needs to have docker swarm installed and initalized)
 
 ```bash
 gci server add prod \
@@ -77,4 +90,3 @@ Logs:
 ```bash
 gci logs
 ```
-
