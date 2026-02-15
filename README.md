@@ -51,26 +51,30 @@ Example shape:
 name = "my_platform"
 server = "prod"
 
-## run locally (optional)
+## run locally
 build_local = """
 docker build -t 127.0.0.1:41114/my_service .
 docker push 127.0.0.1:41114/my_service
 """
 
-# run remotely after sync (optional)
+# alternatively, you can also (or only) run a command on the remote
+# e.g. if you just want to sync all the code to the target machine and build images there
 # build_remote = """
 # docker build -t 127.0.0.1:41114/my_service .
 # docker push 127.0.0.1:41114/my_service
 # """
 
-# local TCP forwards active during build (SSH -L style)
+# local TCP forwards active during local build (SSH -L style)
+# so we can reach the registry bound to localhost on the server
 build_forwards = [
   "127.0.0.1:41114:127.0.0.1:41114",
 ]
 
 # make sure to sync the docker compose file
+# since we're building locally, but can also be the whole folder
 sync_paths = ["docker-compose.prod.yaml"]
 
+# currently only supports docker swarm, but might support others in the future
 [driver_docker_swarm]
 stack_name = "my_platform"
 log_services = ["app", "migrate"]
