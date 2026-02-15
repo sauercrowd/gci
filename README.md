@@ -14,7 +14,7 @@ Just a CLI, only requires docker swarm and ssh on the remote host.
 - any server with ssh and docker swarm enabled+initialized
 - a docker registry. you can just start one on the remote server with 
 ```
-docker run --name local-registry -p 127.0.0.1:41114:127.0.0.1:5000 registry:2
+docker run --name local-registry --restart always -p 127.0.0.1:41114:127.0.0.1:5000 registry:3
 ```
 
 </details>
