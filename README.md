@@ -59,6 +59,7 @@ docker push 127.0.0.1:41114/my_service
 
 # alternatively, you can also (or only) run a command on the remote
 # e.g. if you just want to sync all the code to the target machine and build images there
+# this step is executed after the sync step
 # build_remote = """
 # docker build -t 127.0.0.1:41114/my_service .
 # docker push 127.0.0.1:41114/my_service
