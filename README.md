@@ -4,9 +4,13 @@
 
 Fly.io like deployments any VM, Raspberry Pi, or any SSH server.
 
-Just a CLI, only requires docker swarm and ssh on the remote host.
 
 ## Quickstart
+
+It's just a CLI, only requires docker swarm and ssh on the remote host.
+
+Here's the great news: it comes with a `gci agents.md` command that will describe your favourite coding tool how to set it up and use it.
+
 
 <details>
 <summary>Prerequisites</summary>
@@ -55,6 +59,8 @@ server = "prod"
 build_local = """
 docker build -t 127.0.0.1:41114/my_service .
 docker push 127.0.0.1:41114/my_service
+# or use git sha template values:
+# docker build -t 127.0.0.1:41114/my_service:{{ .GitShortSHA }} .
 """
 
 # alternatively, you can also (or only) run a command on the remote
@@ -77,11 +83,24 @@ sync_paths = ["docker-compose.prod.yaml"]
 
 # currently only supports docker swarm, but might support others in the future
 [driver_docker_swarm]
-stack_name = "my_platform"
+app_network = "auto"
 log_services = ["app", "migrate"]
+
+[[driver_docker_swarm.stacks]]
+name = "my_platform_infra"
+compose_file = "docker-compose.infra.yaml"
+mode = "services"
+
+[[driver_docker_swarm.stacks]]
+name = "my_platform_migration"
+compose_file = "docker-compose.migration.yaml"
+mode = "job"
+
+[[driver_docker_swarm.stacks]]
+name = "my_platform_app"
 compose_file = "docker-compose.prod.yaml"
-# migration_service = "migrate"
-# migration_strict = true
+mode = "services"
+
 prune_images = true
 ```
 
@@ -114,5 +133,29 @@ gci logs
 LLM-oriented project and config reference:
 
 ```bash
-gci docs
+gci agents.md
 ```
+
+Template rendering with git/deploy context:
+
+```bash
+# stdout
+gci template render deploy.yaml.tmpl
+
+# write to file
+gci template render deploy.yaml.tmpl deploy.yaml
+
+# in-place
+gci template render -i deploy.yaml.tmpl
+```
+
+Template variables/functions:
+- `{{ .GitSHA }}`
+- `{{ .GitShortSHA }}`
+- `{{ .AppNetwork }}` (when `gci.toml` is found)
+- `{{ .ServiceName }}` (when `gci.toml` is found)
+- `{{ git_sha }}`
+- `{{ git_short_sha }}`
+- `{{ app_network }}`
+
+The same template values/functions are also rendered in `build_local` and `build_remote` during `gci deploy`.

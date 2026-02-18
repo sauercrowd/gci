@@ -60,8 +60,18 @@ var deployCmd = &cobra.Command{
 			PrivateKeyPath: srv.PrivateKey,
 			Timeout:        deployConnectTimeout,
 		}
+		renderCtx := templateContext{
+			ServiceName: cfg.Name,
+		}
+		if cfg.DriverDockerSwarm != nil {
+			renderCtx.AppNetwork = cfg.DriverDockerSwarm.ResolvedAppNetwork(cfg.Name)
+		}
 		if localBuild := strings.TrimSpace(cfg.BuildLocal); localBuild != "" {
-			if err := runLocalBuild(cmd.Context(), cmd, baseDir, localBuild, target, cfg.BuildForwards); err != nil {
+			renderedLocalBuild, err := renderTemplateString("build_local", localBuild, baseDir, renderCtx)
+			if err != nil {
+				return fmt.Errorf("failed to render build_local template: %w", err)
+			}
+			if err := runLocalBuild(cmd.Context(), cmd, baseDir, renderedLocalBuild, target, cfg.BuildForwards); err != nil {
 				return err
 			}
 		}
@@ -73,7 +83,11 @@ var deployCmd = &cobra.Command{
 		}
 
 		if remoteBuild := strings.TrimSpace(cfg.BuildRemote); remoteBuild != "" {
-			if err := runRemoteBuild(cmd.Context(), cmd, remoteBuild, target, remoteServiceDir); err != nil {
+			renderedRemoteBuild, err := renderTemplateString("build_remote", remoteBuild, baseDir, renderCtx)
+			if err != nil {
+				return fmt.Errorf("failed to render build_remote template: %w", err)
+			}
+			if err := runRemoteBuild(cmd.Context(), cmd, renderedRemoteBuild, target, remoteServiceDir); err != nil {
 				return err
 			}
 		}

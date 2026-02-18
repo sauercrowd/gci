@@ -22,16 +22,63 @@ type Config struct {
 }
 
 type DockerSwarmConfig struct {
-	StackName        string   `toml:"stack_name"`
-	LogServices      []string `toml:"log_services,omitempty"`
-	ComposeFile      string   `toml:"compose_file"`
-	MigrationService string   `toml:"migration_service,omitempty"`
-	MigrationStrict  bool     `toml:"migration_strict,omitempty"`
-	PruneImages      *bool    `toml:"prune_images,omitempty"`
+	AppNetwork  string             `toml:"app_network,omitempty"`
+	LogStack    string             `toml:"log_stack,omitempty"`
+	LogServices []string           `toml:"log_services,omitempty"`
+	Stacks      []DockerSwarmStack `toml:"stacks"`
+	PruneImages *bool              `toml:"prune_images,omitempty"`
+}
+
+type DockerSwarmStack struct {
+	Name               string `toml:"name"`
+	ComposeFile        string `toml:"compose_file"`
+	Mode               string `toml:"mode,omitempty"`
+	WaitTimeoutSeconds int    `toml:"wait_timeout_seconds,omitempty"`
 }
 
 func (c DockerSwarmConfig) PruneImagesEnabled() bool {
 	return c.PruneImages == nil || *c.PruneImages
+}
+
+func (c DockerSwarmConfig) ResolvedAppNetwork(appName string) string {
+	configured := strings.TrimSpace(c.AppNetwork)
+	if configured == "" || strings.EqualFold(configured, "auto") {
+		return deterministicDockerSwarmNetwork(appName)
+	}
+	return configured
+}
+
+func (c DockerSwarmConfig) AutoManagesAppNetwork() bool {
+	configured := strings.TrimSpace(c.AppNetwork)
+	return configured == "" || strings.EqualFold(configured, "auto")
+}
+
+func deterministicDockerSwarmNetwork(appName string) string {
+	normalized := strings.ToLower(strings.TrimSpace(appName))
+	if normalized == "" {
+		normalized = "app"
+	}
+
+	cleaned := strings.Builder{}
+	lastUnderscore := false
+	for _, r := range normalized {
+		isAlnum := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+		if isAlnum {
+			cleaned.WriteRune(r)
+			lastUnderscore = false
+			continue
+		}
+		if !lastUnderscore {
+			cleaned.WriteRune('_')
+			lastUnderscore = true
+		}
+	}
+
+	value := strings.Trim(cleaned.String(), "_")
+	if value == "" {
+		value = "app"
+	}
+	return "gci_net_" + value
 }
 
 func NewDefaultConfig(serviceName, serverName string) Config {
@@ -51,11 +98,16 @@ func NewDefaultConfig(serviceName, serverName string) Config {
 			"*.pyc",
 		},
 		DriverDockerSwarm: &DockerSwarmConfig{
-			StackName:        serviceName,
-			LogServices:      []string{"app", "migrate"},
-			ComposeFile:      "docker-compose.prod.yaml",
-			MigrationService: "migrate",
-			PruneImages:      &pruneImages,
+			AppNetwork:  "auto",
+			LogServices: []string{"app"},
+			Stacks: []DockerSwarmStack{
+				{
+					Name:        serviceName,
+					ComposeFile: "docker-compose.prod.yaml",
+					Mode:        "services",
+				},
+			},
+			PruneImages: &pruneImages,
 		},
 	}
 }

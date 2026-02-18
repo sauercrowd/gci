@@ -62,7 +62,7 @@ func newInitCommand() *cobra.Command {
 				return fmt.Errorf("failed to write %q: %w", configPath, err)
 			}
 
-			composePath := cfg.DriverDockerSwarm.ComposeFile
+			composePath := cfg.DriverDockerSwarm.Stacks[0].ComposeFile
 			if _, err := os.Stat(composePath); err == nil {
 				fmt.Fprintf(cmd.OutOrStdout(), "left existing compose file untouched at %s\n", composePath)
 			} else if !os.IsNotExist(err) {
@@ -104,14 +104,21 @@ func remoteStackExists(cmd *cobra.Command, cfg service.Config) (bool, error) {
 		Timeout:        deployConnectTimeout,
 	}
 	runner := newSSHRemoteRunner(target)
-	stackName := cfg.DriverDockerSwarm.StackName
 	result, err := runner.Run(cmd.Context(), "docker stack ls --format '{{.Name}}'")
 	if err != nil {
 		return false, fmt.Errorf("failed to check remote stacks on %q: %w", srv.Name, err)
 	}
 
+	existing := map[string]struct{}{}
 	for _, line := range strings.Split(strings.TrimSpace(result.Stdout), "\n") {
-		if strings.TrimSpace(line) == stackName {
+		name := strings.TrimSpace(line)
+		if name == "" {
+			continue
+		}
+		existing[name] = struct{}{}
+	}
+	for _, stack := range cfg.DriverDockerSwarm.Stacks {
+		if _, ok := existing[stack.Name]; ok {
 			return true, nil
 		}
 	}
@@ -170,24 +177,23 @@ sync_paths = ["."]
 exclude_patterns = [".git", "node_modules", "__pycache__", "*.pyc"]
 
 [driver_docker_swarm]
-# Swarm stack to deploy
-stack_name = %q
+# Shared app network. "auto" => gci_net_<app_name>
+app_network = "auto"
+
+# Optional: stack to target for gci logs (defaults to last stack below)
+# log_stack = "my_service_app"
 
 # Services included in gci logs by default
 log_services = [%s]
 
-# Compose file path on remote (relative to synced service directory)
+[[driver_docker_swarm.stacks]]
+name = %q
 compose_file = %q
-
-# Optional migration one-shot service triggered on deploy
-migration_service = %q
-
-# Optional: fail deploy if migration trigger fails
-# migration_strict = true
+mode = "services"
 
 # Prune unused images after successful deploy
 prune_images = %t
-`, cfg.Name, serverLine, cfg.BuildLocal, cfg.DriverDockerSwarm.StackName, quotedCSV(logServices), cfg.DriverDockerSwarm.ComposeFile, cfg.DriverDockerSwarm.MigrationService, cfg.DriverDockerSwarm.PruneImagesEnabled())
+`, cfg.Name, serverLine, cfg.BuildLocal, quotedCSV(logServices), cfg.DriverDockerSwarm.Stacks[0].Name, cfg.DriverDockerSwarm.Stacks[0].ComposeFile, cfg.DriverDockerSwarm.PruneImagesEnabled())
 }
 
 func quotedCSV(values []string) string {
@@ -206,7 +212,7 @@ services:
   app:
     image: your-registry/%s-app:latest
     networks:
-      - web
+      - app_net
     deploy:
       replicas: 2
       update_config:
@@ -232,7 +238,7 @@ services:
       - "80:80"
       - "443:443"
     networks:
-      - web
+      - app_net
     deploy:
       replicas: 2
       update_config:
@@ -250,14 +256,15 @@ services:
     image: your-registry/%s-app:latest
     command: ["./bin/migrate"]
     networks:
-      - web
+      - app_net
     deploy:
       replicas: 1
       restart_policy:
         condition: none
 
 networks:
-  web:
-    driver: overlay
+  app_net:
+    external: true
+    name: "${GCI_APP_NETWORK}"
 `, stack, stack, stack)
 }

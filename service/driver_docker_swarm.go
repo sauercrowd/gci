@@ -11,6 +11,11 @@ import (
 
 type dockerSwarmDriver struct{}
 
+const (
+	dockerSwarmStackModeServices = "services"
+	dockerSwarmStackModeJob      = "job"
+)
+
 func (dockerSwarmDriver) Name() string {
 	return "docker_swarm"
 }
@@ -24,96 +29,71 @@ func (dockerSwarmDriver) Validate(cfg Config) error {
 }
 
 func validateDockerSwarmConfig(cfg DockerSwarmConfig) error {
-	if cfg.StackName == "" {
-		return fmt.Errorf("driver_docker_swarm.stack_name is required")
+	if len(cfg.Stacks) == 0 {
+		return fmt.Errorf("driver_docker_swarm.stacks must contain at least one stack")
 	}
-	if cfg.ComposeFile == "" {
-		return fmt.Errorf("driver_docker_swarm.compose_file is required")
+
+	names := map[string]struct{}{}
+	for i, stack := range cfg.Stacks {
+		prefix := fmt.Sprintf("driver_docker_swarm.stacks[%d]", i)
+		if strings.TrimSpace(stack.Name) == "" {
+			return fmt.Errorf("%s.name is required", prefix)
+		}
+		if strings.TrimSpace(stack.ComposeFile) == "" {
+			return fmt.Errorf("%s.compose_file is required", prefix)
+		}
+		if _, seen := names[stack.Name]; seen {
+			return fmt.Errorf("duplicate stack name %q", stack.Name)
+		}
+		names[stack.Name] = struct{}{}
+
+		mode := dockerSwarmStackMode(stack)
+		if mode != dockerSwarmStackModeServices && mode != dockerSwarmStackModeJob {
+			return fmt.Errorf("%s.mode must be %q or %q", prefix, dockerSwarmStackModeServices, dockerSwarmStackModeJob)
+		}
+		if stack.WaitTimeoutSeconds < 0 {
+			return fmt.Errorf("%s.wait_timeout_seconds must be >= 0", prefix)
+		}
 	}
+
+	if cfg.LogStack != "" {
+		if _, ok := names[cfg.LogStack]; !ok {
+			return fmt.Errorf("driver_docker_swarm.log_stack %q is not present in driver_docker_swarm.stacks", cfg.LogStack)
+		}
+	}
+
 	return nil
 }
 
 func (dockerSwarmDriver) Deploy(ctx context.Context, runner RemoteRunner, cfg Config, remoteServiceDir string, stdout, stderr io.Writer) error {
-	stackName := cfg.DriverDockerSwarm.StackName
-	composeFile := cfg.DriverDockerSwarm.ComposeFile
+	swarmCfg := *cfg.DriverDockerSwarm
+	appNetwork := swarmCfg.ResolvedAppNetwork(cfg.Name)
 
-	deployCommand := fmt.Sprintf(
-		"cd %s && docker stack deploy -c %s %s",
-		shellQuote(remoteServiceDir),
-		shellQuote(composeFile),
-		shellQuote(stackName),
-	)
-	if err := runner.Stream(ctx, deployCommand, stdout, stderr); err != nil {
-		return fmt.Errorf("failed to deploy docker stack: %w", err)
+	if err := ensureDockerSwarmNetwork(ctx, runner, appNetwork, stdout, stderr); err != nil {
+		return err
 	}
 
-	if cfg.DriverDockerSwarm.MigrationService != "" {
-		migrationServiceRef := fmt.Sprintf("%s_%s", stackName, cfg.DriverDockerSwarm.MigrationService)
-		migrationCommand := fmt.Sprintf("docker service update --force --detach=false %s", shellQuote(migrationServiceRef))
-		err := runner.Stream(ctx, migrationCommand, stdout, stderr)
-		if err != nil {
-			completed, details, verifyErr := dockerSwarmMigrationCompleted(ctx, runner, migrationServiceRef)
-			if verifyErr == nil && completed {
-				fmt.Fprintf(stdout, "migration service %s completed successfully\n", migrationServiceRef)
-			} else if cfg.DriverDockerSwarm.MigrationStrict {
-				if verifyErr != nil {
-					return fmt.Errorf("failed to trigger migration service: %w (and failed to verify migration completion: %v)", err, verifyErr)
-				}
-				return fmt.Errorf("failed to trigger migration service: %w (latest task: %s)", err, details)
-			} else {
-				if verifyErr != nil {
-					fmt.Fprintf(
-						stderr,
-						"warning: migration trigger failed but continuing (migration_strict=false): %v (and failed to verify migration completion: %v)\n",
-						err,
-						verifyErr,
-					)
-				} else {
-					fmt.Fprintf(
-						stderr,
-						"warning: migration trigger failed but continuing (migration_strict=false): %v (latest task: %s)\n",
-						err,
-						details,
-					)
-				}
-			}
+	for _, stack := range swarmCfg.Stacks {
+		mode := dockerSwarmStackMode(stack)
+		fmt.Fprintf(stdout, "deploying stack %q (mode=%s)\n", stack.Name, mode)
+
+		deployCommand := fmt.Sprintf(
+			"cd %s && GCI_APP_NETWORK=%s docker stack deploy -c %s %s",
+			shellQuote(remoteServiceDir),
+			shellQuote(appNetwork),
+			shellQuote(stack.ComposeFile),
+			shellQuote(stack.Name),
+		)
+		if err := runner.Stream(ctx, deployCommand, stdout, stderr); err != nil {
+			return fmt.Errorf("failed to deploy docker stack %q: %w", stack.Name, err)
 		}
-	}
 
-	waitCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
-	defer cancel()
-
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
-
-	lastState := ""
-	ignoredServices := map[string]struct{}{}
-	if cfg.DriverDockerSwarm.MigrationService != "" {
-		ignoredServices[fmt.Sprintf("%s_%s", stackName, cfg.DriverDockerSwarm.MigrationService)] = struct{}{}
-	}
-	for {
-		stable, state, err := dockerSwarmStackStable(waitCtx, runner, stackName, ignoredServices)
-		if err != nil {
+		if err := waitForDockerSwarmStack(ctx, runner, stack, stdout); err != nil {
 			return err
 		}
-		lastState = state
-		if stable {
-			fmt.Fprintln(stdout, "stack is stable")
-			break
-		}
-		fmt.Fprintf(stdout, "waiting for stack stability: %s\n", state)
-
-		select {
-		case <-waitCtx.Done():
-			if lastState == "" {
-				lastState = "no services reported"
-			}
-			return fmt.Errorf("timed out waiting for docker stack %q to become stable (last state: %s)", stackName, lastState)
-		case <-ticker.C:
-		}
 	}
 
-	if cfg.DriverDockerSwarm.PruneImagesEnabled() {
+	if swarmCfg.PruneImagesEnabled() {
 		fmt.Fprintln(stdout, "pruning unused docker images...")
 		if err := runner.Stream(ctx, "docker image prune -f", stdout, stderr); err != nil {
 			return fmt.Errorf("failed to prune docker images: %w", err)
@@ -124,32 +104,45 @@ func (dockerSwarmDriver) Deploy(ctx context.Context, runner RemoteRunner, cfg Co
 }
 
 func (dockerSwarmDriver) Remove(ctx context.Context, runner RemoteRunner, cfg Config, remoteServiceDir string) error {
-	stackName := cfg.DriverDockerSwarm.StackName
+	swarmCfg := *cfg.DriverDockerSwarm
+	for i := len(swarmCfg.Stacks) - 1; i >= 0; i-- {
+		stackName := swarmCfg.Stacks[i].Name
 
-	removeCommand := fmt.Sprintf("docker stack rm %s || true", shellQuote(stackName))
-	if _, err := runner.Run(ctx, removeCommand); err != nil {
-		return fmt.Errorf("failed to remove docker stack: %w", err)
+		removeCommand := fmt.Sprintf("docker stack rm %s || true", shellQuote(stackName))
+		if _, err := runner.Run(ctx, removeCommand); err != nil {
+			return fmt.Errorf("failed to remove docker stack %q: %w", stackName, err)
+		}
+
+		waitCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		ticker := time.NewTicker(2 * time.Second)
+		for {
+			exists, err := dockerSwarmStackExists(waitCtx, runner, stackName)
+			if err != nil {
+				ticker.Stop()
+				cancel()
+				return err
+			}
+			if !exists {
+				break
+			}
+
+			select {
+			case <-waitCtx.Done():
+				ticker.Stop()
+				cancel()
+				return fmt.Errorf("timed out waiting for docker stack %q to be removed", stackName)
+			case <-ticker.C:
+			}
+		}
+		ticker.Stop()
+		cancel()
 	}
 
-	waitCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-	defer cancel()
-
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		exists, err := dockerSwarmStackExists(waitCtx, runner, stackName)
-		if err != nil {
-			return err
-		}
-		if !exists {
-			break
-		}
-
-		select {
-		case <-waitCtx.Done():
-			return fmt.Errorf("timed out waiting for docker stack %q to be removed", stackName)
-		case <-ticker.C:
+	if swarmCfg.AutoManagesAppNetwork() {
+		networkName := swarmCfg.ResolvedAppNetwork(cfg.Name)
+		removeNetworkCommand := fmt.Sprintf("docker network rm %s || true", shellQuote(networkName))
+		if _, err := runner.Run(ctx, removeNetworkCommand); err != nil {
+			return fmt.Errorf("failed to remove app network %q: %w", networkName, err)
 		}
 	}
 
@@ -162,25 +155,27 @@ func (dockerSwarmDriver) Remove(ctx context.Context, runner RemoteRunner, cfg Co
 }
 
 func (dockerSwarmDriver) Logs(ctx context.Context, runner RemoteRunner, cfg Config, lines int) (CommandResult, error) {
-	services := selectedLogServices(*cfg.DriverDockerSwarm)
+	swarmCfg := *cfg.DriverDockerSwarm
+	stackName := dockerSwarmLogStack(swarmCfg)
+	services := selectedLogServices(swarmCfg)
 	output := strings.Builder{}
 	errOutput := strings.Builder{}
 
 	for i, serviceName := range services {
-		serviceRef := fmt.Sprintf("%s_%s", cfg.DriverDockerSwarm.StackName, serviceName)
+		serviceRef := fmt.Sprintf("%s_%s", stackName, serviceName)
 		command := fmt.Sprintf("docker service logs --tail %d %s", lines, shellQuote(serviceRef))
 		result, err := runner.Run(ctx, command)
 		if err != nil {
-			return CommandResult{}, commandError(fmt.Sprintf("failed to fetch docker swarm logs for service %q", serviceName), err, result)
+			return CommandResult{}, commandError(fmt.Sprintf("failed to fetch docker swarm logs for service %q in stack %q", serviceName, stackName), err, result)
 		}
 
 		if i > 0 {
 			output.WriteString("\n")
 		}
-		output.WriteString(fmt.Sprintf("===== %s =====\n", serviceName))
+		output.WriteString(fmt.Sprintf("===== %s.%s =====\n", stackName, serviceName))
 		output.WriteString(result.Stdout)
 		if strings.TrimSpace(result.Stderr) != "" {
-			errOutput.WriteString(fmt.Sprintf("===== %s =====\n", serviceName))
+			errOutput.WriteString(fmt.Sprintf("===== %s.%s =====\n", stackName, serviceName))
 			errOutput.WriteString(result.Stderr)
 			if !strings.HasSuffix(result.Stderr, "\n") {
 				errOutput.WriteString("\n")
@@ -192,12 +187,14 @@ func (dockerSwarmDriver) Logs(ctx context.Context, runner RemoteRunner, cfg Conf
 }
 
 func (dockerSwarmDriver) LogsStream(ctx context.Context, runner RemoteRunner, cfg Config, lines int, stdout, stderr io.Writer) error {
-	services := selectedLogServices(*cfg.DriverDockerSwarm)
+	swarmCfg := *cfg.DriverDockerSwarm
+	services := selectedLogServices(swarmCfg)
 	if len(services) != 1 {
 		return fmt.Errorf("streaming logs requires exactly one service; set driver_docker_swarm.log_services to one entry or pass --service")
 	}
 
-	serviceRef := fmt.Sprintf("%s_%s", cfg.DriverDockerSwarm.StackName, services[0])
+	stackName := dockerSwarmLogStack(swarmCfg)
+	serviceRef := fmt.Sprintf("%s_%s", stackName, services[0])
 	command := fmt.Sprintf("docker service logs --tail %d --follow %s", lines, shellQuote(serviceRef))
 	if err := runner.Stream(ctx, command, stdout, stderr); err != nil {
 		return fmt.Errorf("failed to stream docker swarm logs: %w", err)
@@ -206,19 +203,35 @@ func (dockerSwarmDriver) LogsStream(ctx context.Context, runner RemoteRunner, cf
 }
 
 func (dockerSwarmDriver) Status(ctx context.Context, runner RemoteRunner, cfg Config) (CommandResult, error) {
-	stackName := cfg.DriverDockerSwarm.StackName
-	command := fmt.Sprintf(
-		"set -euo pipefail\n"+
-			"echo 'STACK SERVICES'\n"+
-			"docker stack services %s --format '  {{.Name}}  replicas={{.Replicas}}  image={{.Image}}  ports={{.Ports}}'\n",
-		shellQuote(stackName),
-	)
+	swarmCfg := *cfg.DriverDockerSwarm
+	output := strings.Builder{}
 
-	result, err := runner.Run(ctx, command)
-	if err != nil {
-		return CommandResult{}, fmt.Errorf("failed to fetch docker swarm status: %w", err)
+	for i, stack := range swarmCfg.Stacks {
+		command := fmt.Sprintf(
+			"docker stack services %s --format '  {{.Name}}  replicas={{.Replicas}}  image={{.Image}}  ports={{.Ports}}'",
+			shellQuote(stack.Name),
+		)
+
+		result, err := runner.Run(ctx, command)
+		if err != nil {
+			return CommandResult{}, fmt.Errorf("failed to fetch docker swarm status for stack %q: %w", stack.Name, err)
+		}
+
+		if i > 0 {
+			output.WriteString("\n")
+		}
+		output.WriteString(fmt.Sprintf("STACK %s\n", stack.Name))
+		if strings.TrimSpace(result.Stdout) == "" {
+			output.WriteString("  (no services)\n")
+		} else {
+			output.WriteString(result.Stdout)
+			if !strings.HasSuffix(result.Stdout, "\n") {
+				output.WriteString("\n")
+			}
+		}
 	}
-	return result, nil
+
+	return CommandResult{Stdout: output.String()}, nil
 }
 
 func (dockerSwarmDriver) Doctor(ctx context.Context, runner RemoteRunner, _ Config) error {
@@ -251,36 +264,7 @@ func dockerSwarmStackExists(ctx context.Context, runner RemoteRunner, stackName 
 	return false, nil
 }
 
-func dockerSwarmMigrationCompleted(ctx context.Context, runner RemoteRunner, migrationServiceRef string) (bool, string, error) {
-	command := fmt.Sprintf("docker service ps --no-trunc --format '{{.CurrentState}}|{{.Error}}|{{.DesiredState}}' %s | head -n 1", shellQuote(migrationServiceRef))
-	result, err := runner.Run(ctx, command)
-	if err != nil {
-		return false, "", commandError("failed to inspect migration service tasks", err, result)
-	}
-
-	line := strings.TrimSpace(result.Stdout)
-	if line == "" {
-		return false, "no task info", nil
-	}
-
-	parts := strings.SplitN(line, "|", 3)
-	if len(parts) != 3 {
-		return false, line, nil
-	}
-
-	currentState := strings.ToLower(strings.TrimSpace(parts[0]))
-	errorMessage := strings.TrimSpace(parts[1])
-	desiredState := strings.ToLower(strings.TrimSpace(parts[2]))
-
-	isComplete := strings.HasPrefix(currentState, "complete")
-	if desiredState == "shutdown" && isComplete && errorMessage == "" {
-		return true, line, nil
-	}
-
-	return false, line, nil
-}
-
-func dockerSwarmStackStable(ctx context.Context, runner RemoteRunner, stackName string, ignoredServices map[string]struct{}) (bool, string, error) {
+func dockerSwarmStackStable(ctx context.Context, runner RemoteRunner, stackName string) (bool, string, error) {
 	command := fmt.Sprintf("docker stack services %s --format '{{.Name}} {{.Replicas}}'", shellQuote(stackName))
 	result, err := runner.Run(ctx, command)
 	if err != nil {
@@ -307,9 +291,6 @@ func dockerSwarmStackStable(ctx context.Context, runner RemoteRunner, stackName 
 
 		replicas := parts[len(parts)-1]
 		serviceName := strings.Join(parts[:len(parts)-1], " ")
-		if _, ignored := ignoredServices[serviceName]; ignored {
-			continue
-		}
 		desired, running, ok := parseReplicas(replicas)
 		if !ok || running != desired {
 			unstable = append(unstable, fmt.Sprintf("%s=%s", serviceName, replicas))
@@ -321,6 +302,140 @@ func dockerSwarmStackStable(ctx context.Context, runner RemoteRunner, stackName 
 	}
 
 	return true, "stable", nil
+}
+
+func dockerSwarmJobStackCompleted(ctx context.Context, runner RemoteRunner, stackName string) (bool, string, error) {
+	servicesCommand := fmt.Sprintf("docker stack services %s --format '{{.Name}}'", shellQuote(stackName))
+	servicesResult, err := runner.Run(ctx, servicesCommand)
+	if err != nil {
+		return false, "", commandError("failed to list docker stack services", err, servicesResult)
+	}
+
+	serviceLines := strings.Split(strings.TrimSpace(servicesResult.Stdout), "\n")
+	if len(serviceLines) == 1 && serviceLines[0] == "" {
+		return false, "no services reported", nil
+	}
+
+	pending := make([]string, 0)
+	for _, serviceName := range serviceLines {
+		serviceName = strings.TrimSpace(serviceName)
+		if serviceName == "" {
+			continue
+		}
+
+		stateCommand := fmt.Sprintf("docker service ps --no-trunc --format '{{.CurrentState}}|{{.Error}}|{{.DesiredState}}' %s | head -n 1", shellQuote(serviceName))
+		stateResult, stateErr := runner.Run(ctx, stateCommand)
+		if stateErr != nil {
+			return false, "", commandError(fmt.Sprintf("failed to inspect docker service tasks for %q", serviceName), stateErr, stateResult)
+		}
+
+		line := strings.TrimSpace(stateResult.Stdout)
+		if line == "" {
+			pending = append(pending, fmt.Sprintf("%s=no task info", serviceName))
+			continue
+		}
+
+		parts := strings.SplitN(line, "|", 3)
+		if len(parts) != 3 {
+			pending = append(pending, fmt.Sprintf("%s=%s", serviceName, line))
+			continue
+		}
+
+		currentState := strings.ToLower(strings.TrimSpace(parts[0]))
+		errorMessage := strings.TrimSpace(parts[1])
+		desiredState := strings.ToLower(strings.TrimSpace(parts[2]))
+
+		if strings.HasPrefix(currentState, "complete") && errorMessage == "" {
+			continue
+		}
+		if strings.Contains(currentState, "failed") || strings.HasPrefix(currentState, "rejected") || (errorMessage != "" && !strings.HasPrefix(currentState, "running")) {
+			return false, "", fmt.Errorf("job stack %q failed: %s=%s", stackName, serviceName, line)
+		}
+
+		pending = append(pending, fmt.Sprintf("%s=%s (desired=%s)", serviceName, currentState, desiredState))
+	}
+
+	if len(pending) > 0 {
+		return false, strings.Join(pending, ", "), nil
+	}
+
+	return true, "complete", nil
+}
+
+func waitForDockerSwarmStack(ctx context.Context, runner RemoteRunner, stack DockerSwarmStack, stdout io.Writer) error {
+	waitTimeout := dockerSwarmStackTimeout(stack)
+	waitCtx, cancel := context.WithTimeout(ctx, waitTimeout)
+	defer cancel()
+
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	mode := dockerSwarmStackMode(stack)
+	lastState := ""
+	for {
+		var stable bool
+		var state string
+		var err error
+
+		switch mode {
+		case dockerSwarmStackModeJob:
+			stable, state, err = dockerSwarmJobStackCompleted(waitCtx, runner, stack.Name)
+		default:
+			stable, state, err = dockerSwarmStackStable(waitCtx, runner, stack.Name)
+		}
+		if err != nil {
+			return err
+		}
+		lastState = state
+		if stable {
+			fmt.Fprintf(stdout, "stack %q is stable\n", stack.Name)
+			return nil
+		}
+		fmt.Fprintf(stdout, "waiting for stack %q (%s): %s\n", stack.Name, mode, state)
+
+		select {
+		case <-waitCtx.Done():
+			if lastState == "" {
+				lastState = "no services reported"
+			}
+			return fmt.Errorf("timed out waiting for docker stack %q to become stable (mode=%s, last state: %s)", stack.Name, mode, lastState)
+		case <-ticker.C:
+		}
+	}
+}
+
+func dockerSwarmStackMode(stack DockerSwarmStack) string {
+	mode := strings.ToLower(strings.TrimSpace(stack.Mode))
+	if mode == "" {
+		return dockerSwarmStackModeServices
+	}
+	return mode
+}
+
+func dockerSwarmStackTimeout(stack DockerSwarmStack) time.Duration {
+	if stack.WaitTimeoutSeconds > 0 {
+		return time.Duration(stack.WaitTimeoutSeconds) * time.Second
+	}
+	if dockerSwarmStackMode(stack) == dockerSwarmStackModeJob {
+		return 10 * time.Minute
+	}
+	return 5 * time.Minute
+}
+
+func ensureDockerSwarmNetwork(ctx context.Context, runner RemoteRunner, networkName string, stdout, stderr io.Writer) error {
+	fmt.Fprintf(stdout, "ensuring app network %q exists\n", networkName)
+	command := fmt.Sprintf("docker network inspect %s >/dev/null 2>&1 || docker network create --driver overlay --attachable %s", shellQuote(networkName), shellQuote(networkName))
+	if err := runner.Stream(ctx, command, stdout, stderr); err != nil {
+		return fmt.Errorf("failed to ensure app network %q exists: %w", networkName, err)
+	}
+	return nil
+}
+
+func dockerSwarmLogStack(cfg DockerSwarmConfig) string {
+	if strings.TrimSpace(cfg.LogStack) != "" {
+		return cfg.LogStack
+	}
+	return cfg.Stacks[len(cfg.Stacks)-1].Name
 }
 
 func parseReplicas(value string) (desired int, running int, ok bool) {
