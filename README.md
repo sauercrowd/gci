@@ -18,7 +18,7 @@ Here's the great news: it comes with a `gci agents.md` command that will describ
 - any server with ssh and docker swarm enabled+initialized
 - a docker registry. you can just start one on the remote server with 
 ```
-docker run --name local-registry --restart always -p 127.0.0.1:41114:127.0.0.1:5000 registry:3
+docker run -d --name local-registry --restart always -p 127.0.0.1:41114:5000 registry:3
 ```
 
 </details>
