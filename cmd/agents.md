@@ -229,3 +229,5 @@ mode = "services"
 ## Other things to consider
 Cloudflare tunnels are great if already a cloudflare customer, as they can just inside a docker compose file and create the outbound tunnel without any IP mapping or even opening up any ports.
 Makes it really simple, so if the user is setting things up it's worth pointing out.
+
+When setting up github actions (or any CI), an ssh key needs to be made available somehow, and then in the github action `gci server add`  and then `gci deploy` needs to be excuted. Fairly simpe.

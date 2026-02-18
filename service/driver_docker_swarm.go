@@ -85,10 +85,18 @@ func (dockerSwarmDriver) Deploy(ctx context.Context, runner RemoteRunner, cfg Co
 			shellQuote(stack.Name),
 		)
 		if err := runner.Stream(ctx, deployCommand, stdout, stderr); err != nil {
+			fmt.Fprintf(stderr, "deploy command failed for stack %q, collecting recent service logs...\n", stack.Name)
+			diagCtx, cancel := diagnosticContext()
+			defer cancel()
+			dumpDockerSwarmStackLogs(diagCtx, runner, stack.Name, 50, stderr)
 			return fmt.Errorf("failed to deploy docker stack %q: %w", stack.Name, err)
 		}
 
 		if err := waitForDockerSwarmStack(ctx, runner, stack, stdout); err != nil {
+			fmt.Fprintf(stderr, "stack %q failed to reach stable state, collecting recent service logs...\n", stack.Name)
+			diagCtx, cancel := diagnosticContext()
+			defer cancel()
+			dumpDockerSwarmStackLogs(diagCtx, runner, stack.Name, 50, stderr)
 			return err
 		}
 	}
@@ -400,6 +408,52 @@ func waitForDockerSwarmStack(ctx context.Context, runner RemoteRunner, stack Doc
 			}
 			return fmt.Errorf("timed out waiting for docker stack %q to become stable (mode=%s, last state: %s)", stack.Name, mode, lastState)
 		case <-ticker.C:
+		}
+	}
+}
+
+func diagnosticContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), 45*time.Second)
+}
+
+func dumpDockerSwarmStackLogs(ctx context.Context, runner RemoteRunner, stackName string, lines int, out io.Writer) {
+	fmt.Fprintf(out, "----- stack %s logs (last %d lines per service) -----\n", stackName, lines)
+
+	servicesCommand := fmt.Sprintf("docker stack services %s --format '{{.Name}}'", shellQuote(stackName))
+	servicesResult, err := runner.Run(ctx, servicesCommand)
+	if err != nil {
+		fmt.Fprintf(out, "failed to list services for stack %q: %v\n", stackName, err)
+		if strings.TrimSpace(servicesResult.Stderr) != "" {
+			fmt.Fprintf(out, "stderr:\n%s\n", strings.TrimSpace(servicesResult.Stderr))
+		}
+		if strings.TrimSpace(servicesResult.Stdout) != "" {
+			fmt.Fprintf(out, "stdout:\n%s\n", strings.TrimSpace(servicesResult.Stdout))
+		}
+		return
+	}
+
+	services := strings.Split(strings.TrimSpace(servicesResult.Stdout), "\n")
+	if len(services) == 1 && strings.TrimSpace(services[0]) == "" {
+		fmt.Fprintf(out, "no services found for stack %q\n", stackName)
+		return
+	}
+
+	for _, serviceName := range services {
+		serviceName = strings.TrimSpace(serviceName)
+		if serviceName == "" {
+			continue
+		}
+		fmt.Fprintf(out, "===== %s =====\n", serviceName)
+		logCommand := fmt.Sprintf("docker service logs --tail %d %s", lines, shellQuote(serviceName))
+		logResult, logErr := runner.Run(ctx, logCommand)
+		if logErr != nil {
+			fmt.Fprintf(out, "failed to fetch logs for %q: %v\n", serviceName, logErr)
+		}
+		if strings.TrimSpace(logResult.Stdout) != "" {
+			fmt.Fprintln(out, strings.TrimSpace(logResult.Stdout))
+		}
+		if strings.TrimSpace(logResult.Stderr) != "" {
+			fmt.Fprintln(out, strings.TrimSpace(logResult.Stderr))
 		}
 	}
 }
