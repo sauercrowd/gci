@@ -16,7 +16,7 @@ type Config struct {
 	BuildLocal        string             `toml:"build_local,omitempty"`
 	BuildRemote       string             `toml:"build_remote,omitempty"`
 	BuildForwards     []string           `toml:"build_forwards,omitempty"`
-	SyncPaths         []string           `toml:"sync_paths"`
+	SyncPaths         []string           `toml:"sync_paths,omitempty"`
 	ExcludePatterns   []string           `toml:"exclude_patterns,omitempty"`
 	DriverDockerSwarm *DockerSwarmConfig `toml:"driver_docker_swarm,omitempty"`
 }
@@ -88,9 +88,6 @@ func NewDefaultConfig(serviceName, serverName string) Config {
 		Name:       serviceName,
 		Server:     serverName,
 		BuildLocal: "go build ./...",
-		SyncPaths: []string{
-			".",
-		},
 		ExcludePatterns: []string{
 			".git",
 			"node_modules",
@@ -120,9 +117,6 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.BuildLocal) == "" && strings.TrimSpace(c.BuildRemote) == "" {
 		return fmt.Errorf("at least one of build_local or build_remote is required")
 	}
-	if len(c.SyncPaths) == 0 {
-		return fmt.Errorf("at least one sync path is required")
-	}
 	for _, spec := range c.BuildForwards {
 		if _, err := gcissh.ParseForwardSpec(spec); err != nil {
 			return fmt.Errorf("invalid build_forwards entry %q: %w", spec, err)
@@ -135,6 +129,35 @@ func (c Config) Validate() error {
 	}
 
 	return driver.Validate(c)
+}
+
+func (c Config) ResolvedSyncPaths() []string {
+	paths := make([]string, 0, len(c.SyncPaths)+1)
+	seen := map[string]struct{}{}
+
+	add := func(path string) {
+		trimmed := strings.TrimSpace(path)
+		if trimmed == "" {
+			return
+		}
+		if _, ok := seen[trimmed]; ok {
+			return
+		}
+		seen[trimmed] = struct{}{}
+		paths = append(paths, trimmed)
+	}
+
+	for _, path := range c.SyncPaths {
+		add(path)
+	}
+
+	if c.DriverDockerSwarm != nil {
+		for _, stack := range c.DriverDockerSwarm.Stacks {
+			add(stack.ComposeFile)
+		}
+	}
+
+	return paths
 }
 
 func WriteConfigFile(path string, cfg Config) error {

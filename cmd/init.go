@@ -170,8 +170,10 @@ build_local = %q
 #   "0.0.0.0:6380:127.0.0.1:6379",
 # ]
 #
-# Paths (relative to this file's directory) to sync to the remote host
-sync_paths = ["."]
+# Optional extra paths (relative to this file's directory) to sync.
+# Compose files referenced by driver_docker_swarm.stacks[].compose_file
+# are always synced automatically.
+# sync_paths = ["./ops", "./scripts"]
 
 # Exclude patterns for sync (glob + path segment matching)
 exclude_patterns = [".git", "node_modules", "__pycache__", "*.pyc"]

@@ -77,8 +77,9 @@ var deployCmd = &cobra.Command{
 		}
 
 		remoteServiceDir := path.Join(srv.ServiceDir, cfg.Name)
+		syncPaths := cfg.ResolvedSyncPaths()
 		fmt.Fprintf(cmd.OutOrStdout(), "syncing files to %s:%s...\n", srv.Host, remoteServiceDir)
-		if err := gcissh.SyncPaths(cmd.Context(), target, baseDir, cfg.SyncPaths, cfg.ExcludePatterns, remoteServiceDir); err != nil {
+		if err := gcissh.SyncPaths(cmd.Context(), target, baseDir, syncPaths, cfg.ExcludePatterns, remoteServiceDir); err != nil {
 			return err
 		}
 

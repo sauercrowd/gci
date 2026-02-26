@@ -26,20 +26,32 @@ func newStatusCommand() *cobra.Command {
 			}
 
 			tw := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
-			fmt.Fprintln(tw, "NAME\tHOST\tSTATUS\tDETAIL")
+			fmt.Fprintln(tw, "NAME\tHOST\tSTATUS\tNODE LABELS\tDETAIL")
 			for _, server := range entries {
 				checkCtx, cancel := context.WithTimeout(cmd.Context(), connectTimeout)
-				err := gcissh.CheckReachable(checkCtx, entryTarget(server))
+				target := entryTarget(server)
+				target.Timeout = connectTimeout
+				err := gcissh.CheckReachable(checkCtx, target)
 				cancel()
 
 				status := "reachable"
 				detail := "-"
+				labels := "-"
 				if err != nil {
 					status = "unreachable"
 					detail = err.Error()
+				} else {
+					labelsCtx, labelsCancel := context.WithTimeout(cmd.Context(), connectTimeout*2)
+					nodeLabels, labelsErr := fetchNodeLabels(labelsCtx, target)
+					labelsCancel()
+					if labelsErr != nil {
+						detail = labelsErr.Error()
+					} else {
+						labels = formatLabels(nodeLabels)
+					}
 				}
 
-				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", entryName(server), server.Host, status, detail)
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", entryName(server), server.Host, status, labels, detail)
 			}
 
 			return tw.Flush()

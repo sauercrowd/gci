@@ -66,23 +66,14 @@ func newLogCommand() *cobra.Command {
 			}
 			runner := newSSHRemoteRunner(target)
 
+			stdout := cmd.OutOrStdout()
+			stderr := cmd.ErrOrStderr()
+
 			if follow {
-				return driver.LogsStream(cmd.Context(), runner, cfg, lines, cmd.OutOrStdout(), cmd.ErrOrStderr())
+				return driver.LogsStream(cmd.Context(), runner, cfg, lines, stdout, stderr)
 			}
 
-			result, err := driver.Logs(cmd.Context(), runner, cfg, lines)
-			if err != nil {
-				return err
-			}
-
-			if result.Stdout != "" {
-				fmt.Fprint(cmd.OutOrStdout(), result.Stdout)
-			}
-			if result.Stderr != "" {
-				fmt.Fprint(cmd.ErrOrStderr(), result.Stderr)
-			}
-
-			return nil
+			return driver.Logs(cmd.Context(), runner, cfg, lines, stdout, stderr)
 		},
 	}
 

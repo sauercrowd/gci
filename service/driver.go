@@ -11,7 +11,7 @@ type Driver interface {
 	Validate(cfg Config) error
 	Deploy(ctx context.Context, runner RemoteRunner, cfg Config, remoteServiceDir string, stdout, stderr io.Writer) error
 	Remove(ctx context.Context, runner RemoteRunner, cfg Config, remoteServiceDir string) error
-	Logs(ctx context.Context, runner RemoteRunner, cfg Config, lines int) (CommandResult, error)
+	Logs(ctx context.Context, runner RemoteRunner, cfg Config, lines int, stdout, stderr io.Writer) error
 	LogsStream(ctx context.Context, runner RemoteRunner, cfg Config, lines int, stdout, stderr io.Writer) error
 	Status(ctx context.Context, runner RemoteRunner, cfg Config) (CommandResult, error)
 	Doctor(ctx context.Context, runner RemoteRunner, cfg Config) error

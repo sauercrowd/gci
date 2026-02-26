@@ -78,7 +78,7 @@ func (dockerSwarmDriver) Deploy(ctx context.Context, runner RemoteRunner, cfg Co
 		fmt.Fprintf(stdout, "deploying stack %q (mode=%s)\n", stack.Name, mode)
 
 		deployCommand := fmt.Sprintf(
-			"cd %s && GCI_APP_NETWORK=%s docker stack deploy -c %s %s",
+			"cd %s && GCI_APP_NETWORK=%s docker stack deploy --prune -c %s %s",
 			shellQuote(remoteServiceDir),
 			shellQuote(appNetwork),
 			shellQuote(stack.ComposeFile),
@@ -162,36 +162,39 @@ func (dockerSwarmDriver) Remove(ctx context.Context, runner RemoteRunner, cfg Co
 	return nil
 }
 
-func (dockerSwarmDriver) Logs(ctx context.Context, runner RemoteRunner, cfg Config, lines int) (CommandResult, error) {
+func (dockerSwarmDriver) Logs(ctx context.Context, runner RemoteRunner, cfg Config, lines int, stdout, stderr io.Writer) error {
 	swarmCfg := *cfg.DriverDockerSwarm
 	stackName := dockerSwarmLogStack(swarmCfg)
 	services := selectedLogServices(swarmCfg)
-	output := strings.Builder{}
-	errOutput := strings.Builder{}
+
+	if stdout == nil {
+		stdout = io.Discard
+	}
+	if stderr == nil {
+		stderr = io.Discard
+	}
 
 	for i, serviceName := range services {
 		serviceRef := fmt.Sprintf("%s_%s", stackName, serviceName)
 		command := fmt.Sprintf("docker service logs --tail %d %s", lines, shellQuote(serviceRef))
-		result, err := runner.Run(ctx, command)
-		if err != nil {
-			return CommandResult{}, commandError(fmt.Sprintf("failed to fetch docker swarm logs for service %q in stack %q", serviceName, stackName), err, result)
-		}
 
 		if i > 0 {
-			output.WriteString("\n")
+			fmt.Fprintln(stdout)
 		}
-		output.WriteString(fmt.Sprintf("===== %s.%s =====\n", stackName, serviceName))
-		output.WriteString(result.Stdout)
-		if strings.TrimSpace(result.Stderr) != "" {
-			errOutput.WriteString(fmt.Sprintf("===== %s.%s =====\n", stackName, serviceName))
-			errOutput.WriteString(result.Stderr)
-			if !strings.HasSuffix(result.Stderr, "\n") {
-				errOutput.WriteString("\n")
-			}
+		header := fmt.Sprintf("===== %s.%s =====\n", stackName, serviceName)
+		fmt.Fprint(stdout, header)
+
+		errWriter := &logHeaderOnceWriter{
+			header: header,
+			w:      stderr,
+		}
+
+		if err := runner.Stream(ctx, command, stdout, errWriter); err != nil {
+			return fmt.Errorf("failed to fetch docker swarm logs for service %q in stack %q: %w", serviceName, stackName, err)
 		}
 	}
 
-	return CommandResult{Stdout: output.String(), Stderr: errOutput.String()}, nil
+	return nil
 }
 
 func (dockerSwarmDriver) LogsStream(ctx context.Context, runner RemoteRunner, cfg Config, lines int, stdout, stderr io.Writer) error {
@@ -530,6 +533,28 @@ func commandError(prefix string, err error, result CommandResult) error {
 		return fmt.Errorf("%s: %w\nstderr:\n%s", prefix, err, stderr)
 	}
 	return fmt.Errorf("%s: %w\nstdout:\n%s", prefix, err, stdout)
+}
+
+type logHeaderOnceWriter struct {
+	header string
+	w      io.Writer
+	wrote  bool
+}
+
+func (l *logHeaderOnceWriter) Write(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if l.w == nil {
+		l.w = io.Discard
+	}
+	if !l.wrote {
+		if _, err := fmt.Fprint(l.w, l.header); err != nil {
+			return 0, err
+		}
+		l.wrote = true
+	}
+	return l.w.Write(p)
 }
 
 func selectedLogServices(cfg DockerSwarmConfig) []string {

@@ -34,7 +34,7 @@ It can contain a number of docker swarm stacks, so not just the app but also dep
 When running `gci deploy`:
 
 1. Optional local build: run `build_local` on the client machine.
-2. Sync files: upload `sync_paths` (minus `exclude_patterns`) to:
+2. Sync files: upload all `stacks[].compose_file` plus optional `sync_paths` (minus `exclude_patterns`) to:
    - remote path: `<server.service_dir>/<service.name>`
 3. Optional remote build: run `build_remote` on the server in that synced directory.
 4. Driver deploy: execute driver logic (Docker Swarm stack deploy flow).
@@ -71,8 +71,9 @@ docker push 127.0.0.1:41114/my_service
 #   "127.0.0.1:41114:127.0.0.1:41114",
 # ]
 
-# Required: list of local paths (relative to gci.toml) to sync
-sync_paths = ["docker-compose.prod.yaml"]
+# Optional extra local paths (relative to gci.toml) to sync.
+# Compose files in driver_docker_swarm.stacks[].compose_file are always included.
+# sync_paths = ["./ops", "./scripts"]
 
 # Optional path/glob excludes during sync
 exclude_patterns = [".git", "node_modules", "__pycache__", "*.pyc"]
@@ -109,7 +110,7 @@ prune_images = true
 - At least one of `build_local` or `build_remote` must be present.
 - `build_local` and `build_remote` are rendered as templates before execution.
 - `build_forwards`: optional local TCP forwards during local build.
-- `sync_paths`: required list of files/dirs to transfer.
+- `sync_paths`: optional extra files/dirs to transfer.
 - `exclude_patterns`: optional skip rules for sync.
 
 ### Docker Swarm Driver Block
@@ -118,6 +119,7 @@ prune_images = true
 - `stacks`: ordered deployment list; each stack deploys and then waits before the next starts.
 - `stacks[].name`: target swarm stack name.
 - `stacks[].compose_file`: compose file path relative to synced service directory.
+- `stacks[].compose_file` entries are always synced, even when `sync_paths` is omitted.
 - `stacks[].mode`: wait strategy (`services` for desired replicas, `job` for one-shot completion).
 - `stacks[].wait_timeout_seconds`: optional custom wait timeout per stack.
 - `log_stack`: optional stack used by `gci logs` (defaults to the last stack).
@@ -193,7 +195,8 @@ docker push 127.0.0.1:41114/my_app:{{ .GitShortSHA }}
 # """
 
 build_forwards = ["127.0.0.1:41114:127.0.0.1:41114"]
-sync_paths = ["docker-compose.infra.yaml", "docker-compose.migration.yaml", "docker-compose.prod.yaml"]
+# Optional extra sync paths (compose_file entries are always synced):
+# sync_paths = ["./ops", "./scripts"]
 
 [driver_docker_swarm]
 app_network = "auto"
@@ -227,7 +230,4 @@ mode = "services"
 - `gci template render <input_file> [output_file]`: render templates with git/deploy context values.
 
 ## Other things to consider
-Cloudflare tunnels are great if already a cloudflare customer, as they can just inside a docker compose file and create the outbound tunnel without any IP mapping or even opening up any ports.
-Makes it really simple, so if the user is setting things up it's worth pointing out.
-
 When setting up github actions (or any CI), an ssh key needs to be made available somehow, and then in the github action `gci server add`  and then `gci deploy` needs to be excuted. Fairly simpe.

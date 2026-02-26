@@ -77,9 +77,8 @@ build_forwards = [
   "127.0.0.1:41114:127.0.0.1:41114",
 ]
 
-# make sure to sync the docker compose file
-# since we're building locally, but can also be the whole folder
-sync_paths = ["docker-compose.prod.yaml"]
+# Optional extra files/dirs to sync; compose_file entries are always synced automatically
+# sync_paths = ["./ops", "./scripts"]
 
 # currently only supports docker swarm, but might support others in the future
 [driver_docker_swarm]
@@ -112,7 +111,7 @@ gci deploy
 
 Deploy does:
 1. run local `build_local`
-2. sync `sync_paths` to `<service_dir>/<service_name>` over SSH (`tar.gz` stream)
+2. sync all `stacks[].compose_file` paths plus optional `sync_paths` to `<service_dir>/<service_name>` over SSH (`tar.gz` stream)
 3. run remote `build_remote` in the synced remote service directory
 4. run driver deploy
 

@@ -54,11 +54,31 @@ func RunCommand(ctx context.Context, target Target, command string) (CommandResu
 	session.Stdout = &stdout
 	session.Stderr = &stderr
 
-	if err := session.Run(command); err != nil {
+	if err := session.Start(command); err != nil {
+		return CommandResult{}, fmt.Errorf("failed to start remote command: %w", err)
+	}
+
+	waitCh := make(chan error, 1)
+	go func() {
+		waitCh <- session.Wait()
+	}()
+
+	select {
+	case err := <-waitCh:
+		if err != nil {
+			return CommandResult{
+				Stdout: stdout.String(),
+				Stderr: stderr.String(),
+			}, fmt.Errorf("failed to run remote command: %w", err)
+		}
+	case <-ctx.Done():
+		_ = session.Close()
+		_ = client.Close()
+		<-waitCh
 		return CommandResult{
 			Stdout: stdout.String(),
 			Stderr: stderr.String(),
-		}, fmt.Errorf("failed to run remote command: %w", err)
+		}, ctx.Err()
 	}
 
 	return CommandResult{
