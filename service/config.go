@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/pelletier/go-toml/v2"
 	gcissh "github.com/sauercrowd/gci/ssh"
@@ -22,11 +23,12 @@ type Config struct {
 }
 
 type DockerSwarmConfig struct {
-	AppNetwork  string             `toml:"app_network,omitempty"`
-	LogStack    string             `toml:"log_stack,omitempty"`
-	LogServices []string           `toml:"log_services,omitempty"`
-	Stacks      []DockerSwarmStack `toml:"stacks"`
-	PruneImages *bool              `toml:"prune_images,omitempty"`
+	AppNetwork           string             `toml:"app_network,omitempty"`
+	LogStack             string             `toml:"log_stack,omitempty"`
+	LogServices          []string           `toml:"log_services,omitempty"`
+	Stacks               []DockerSwarmStack `toml:"stacks"`
+	PruneImages          *bool              `toml:"prune_images,omitempty"`
+	PruneContainersAfter *string            `toml:"prune_containers_after,omitempty"`
 }
 
 type DockerSwarmStack struct {
@@ -36,8 +38,34 @@ type DockerSwarmStack struct {
 	WaitTimeoutSeconds int    `toml:"wait_timeout_seconds,omitempty"`
 }
 
+const (
+	defaultDockerSwarmContainerPruneAfter = 24 * time.Hour
+	pruneContainersDisableLiteral         = "none"
+)
+
+var defaultDockerSwarmContainerPruneAfterLiteral = FormatDurationLiteral(defaultDockerSwarmContainerPruneAfter)
+
 func (c DockerSwarmConfig) PruneImagesEnabled() bool {
 	return c.PruneImages == nil || *c.PruneImages
+}
+
+func (c DockerSwarmConfig) PruneContainersAfterDuration() (time.Duration, bool) {
+	duration, enabled, err := parsePruneContainersAfter(c.PruneContainersAfter)
+	if err != nil {
+		panic(err)
+	}
+	return duration, enabled
+}
+
+func (c DockerSwarmConfig) ResolvedPruneContainersAfterLiteral() string {
+	if c.PruneContainersAfter == nil || strings.TrimSpace(*c.PruneContainersAfter) == "" {
+		return defaultDockerSwarmContainerPruneAfterLiteral
+	}
+	literal := strings.TrimSpace(*c.PruneContainersAfter)
+	if strings.EqualFold(literal, pruneContainersDisableLiteral) {
+		return pruneContainersDisableLiteral
+	}
+	return literal
 }
 
 func (c DockerSwarmConfig) ResolvedAppNetwork(appName string) string {
@@ -81,8 +109,44 @@ func deterministicDockerSwarmNetwork(appName string) string {
 	return "gci_net_" + value
 }
 
+func parsePruneContainersAfter(value *string) (time.Duration, bool, error) {
+	literal := defaultDockerSwarmContainerPruneAfterLiteral
+	if value != nil && strings.TrimSpace(*value) != "" {
+		literal = strings.TrimSpace(*value)
+	}
+
+	if strings.EqualFold(literal, pruneContainersDisableLiteral) {
+		return 0, false, nil
+	}
+
+	dur, err := time.ParseDuration(literal)
+	if err != nil {
+		return 0, false, fmt.Errorf("driver_docker_swarm.prune_containers_after must be a valid duration or %q: %w", pruneContainersDisableLiteral, err)
+	}
+	if dur <= 0 {
+		return 0, false, fmt.Errorf("driver_docker_swarm.prune_containers_after must be greater than 0 or %q", pruneContainersDisableLiteral)
+	}
+
+	return dur, true, nil
+}
+
+func FormatDurationLiteral(d time.Duration) string {
+	if d <= 0 {
+		return "0s"
+	}
+	d = d.Round(time.Second)
+	if d%(time.Hour) == 0 {
+		return fmt.Sprintf("%dh", int64(d/time.Hour))
+	}
+	if d%(time.Minute) == 0 {
+		return fmt.Sprintf("%dm", int64(d/time.Minute))
+	}
+	return d.String()
+}
+
 func NewDefaultConfig(serviceName, serverName string) Config {
 	pruneImages := true
+	pruneContainersAfter := defaultDockerSwarmContainerPruneAfterLiteral
 
 	return Config{
 		Name:       serviceName,
@@ -104,7 +168,8 @@ func NewDefaultConfig(serviceName, serverName string) Config {
 					Mode:        "services",
 				},
 			},
-			PruneImages: &pruneImages,
+			PruneImages:          &pruneImages,
+			PruneContainersAfter: &pruneContainersAfter,
 		},
 	}
 }

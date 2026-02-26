@@ -62,6 +62,10 @@ func validateDockerSwarmConfig(cfg DockerSwarmConfig) error {
 		}
 	}
 
+	if _, _, err := parsePruneContainersAfter(cfg.PruneContainersAfter); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -105,6 +109,14 @@ func (dockerSwarmDriver) Deploy(ctx context.Context, runner RemoteRunner, cfg Co
 		fmt.Fprintln(stdout, "pruning unused docker images...")
 		if err := runner.Stream(ctx, "docker image prune -f", stdout, stderr); err != nil {
 			return fmt.Errorf("failed to prune docker images: %w", err)
+		}
+	}
+
+	if cutoff, enabled := swarmCfg.PruneContainersAfterDuration(); enabled && cutoff > 0 {
+		for _, stack := range swarmCfg.Stacks {
+			if err := pruneDockerSwarmStackContainers(ctx, runner, stack.Name, cutoff, stdout, stderr); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -181,6 +193,7 @@ func (dockerSwarmDriver) Logs(ctx context.Context, runner RemoteRunner, cfg Conf
 		if i > 0 {
 			fmt.Fprintln(stdout)
 		}
+
 		header := fmt.Sprintf("===== %s.%s =====\n", stackName, serviceName)
 		fmt.Fprint(stdout, header)
 
@@ -486,6 +499,41 @@ func ensureDockerSwarmNetwork(ctx context.Context, runner RemoteRunner, networkN
 		return fmt.Errorf("failed to ensure app network %q exists: %w", networkName, err)
 	}
 	return nil
+}
+
+func pruneDockerSwarmStackContainers(ctx context.Context, runner RemoteRunner, stackName string, olderThan time.Duration, stdout, stderr io.Writer) error {
+	if olderThan <= 0 {
+		return nil
+	}
+
+	dur := dockerDurationLiteral(olderThan)
+	fmt.Fprintf(stdout, "pruning stopped containers for stack %q older than %s...\n", stackName, dur)
+
+	labelFilter := fmt.Sprintf("label=com.docker.stack.namespace=%s", stackName)
+	untilFilter := fmt.Sprintf("until=%s", dur)
+	command := fmt.Sprintf(
+		"docker container prune -f --filter %s --filter %s",
+		shellQuote(labelFilter),
+		shellQuote(untilFilter),
+	)
+	if err := runner.Stream(ctx, command, stdout, stderr); err != nil {
+		return fmt.Errorf("failed to prune containers for stack %q: %w", stackName, err)
+	}
+	return nil
+}
+
+func dockerDurationLiteral(d time.Duration) string {
+	if d <= 0 {
+		return "0s"
+	}
+	d = d.Round(time.Second)
+	if d%(time.Hour) == 0 {
+		return fmt.Sprintf("%dh", int64(d/time.Hour))
+	}
+	if d%(time.Minute) == 0 {
+		return fmt.Sprintf("%dm", int64(d/time.Minute))
+	}
+	return d.String()
 }
 
 func dockerSwarmLogStack(cfg DockerSwarmConfig) string {
