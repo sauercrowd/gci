@@ -99,6 +99,7 @@ compose_file = "docker-compose.prod.yaml"
 mode = "services"
 
 prune_images = true
+prune_containers_after = "24h"
 ```
 
 ## Config Semantics
@@ -125,6 +126,7 @@ prune_images = true
 - `log_stack`: optional stack used by `gci logs` (defaults to the last stack).
 - `log_services`: services shown by default in `gci logs`.
 - `prune_images`: prune unused images post-deploy (default true when omitted).
+- `prune_containers_after`: duration controlling when stopped containers for these stacks are pruned (`"24h"` default, `"none"` disables).
 
 ## Template Rendering
 

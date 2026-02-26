@@ -151,6 +151,7 @@ func renderInitConfig(cfg service.Config) string {
 	if len(logServices) == 0 {
 		logServices = []string{"app"}
 	}
+	pruneContainersAfter := cfg.DriverDockerSwarm.ResolvedPruneContainersAfterLiteral()
 
 	return fmt.Sprintf(`# Service identity
 name = %q
@@ -195,7 +196,11 @@ mode = "services"
 
 # Prune unused images after successful deploy
 prune_images = %t
-`, cfg.Name, serverLine, cfg.BuildLocal, quotedCSV(logServices), cfg.DriverDockerSwarm.Stacks[0].Name, cfg.DriverDockerSwarm.Stacks[0].ComposeFile, cfg.DriverDockerSwarm.PruneImagesEnabled())
+
+# Remove stopped containers for this service once they are older than the duration below
+# Set to "none" to disable
+prune_containers_after = %q
+`, cfg.Name, serverLine, cfg.BuildLocal, quotedCSV(logServices), cfg.DriverDockerSwarm.Stacks[0].Name, cfg.DriverDockerSwarm.Stacks[0].ComposeFile, cfg.DriverDockerSwarm.PruneImagesEnabled(), pruneContainersAfter)
 }
 
 func quotedCSV(values []string) string {

@@ -101,7 +101,10 @@ compose_file = "docker-compose.prod.yaml"
 mode = "services"
 
 prune_images = true
+prune_containers_after = "24h"
 ```
+
+`prune_containers_after` controls how long stopped containers from the managed stacks are kept around; set it to `"none"` to disable container pruning.
 
 3. Deploy
 
