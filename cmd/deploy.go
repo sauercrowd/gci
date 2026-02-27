@@ -133,7 +133,9 @@ func runLocalBuild(ctx context.Context, cmd *cobra.Command, baseDir, buildComman
 	scriptPath := scriptFile.Name()
 	defer os.Remove(scriptPath)
 
-	if _, err := scriptFile.WriteString(buildCommand + "\n"); err != nil {
+	// Ensure multi-line build scripts stop at the first failing command.
+	localScript := "set -e\n" + buildCommand + "\n"
+	if _, err := scriptFile.WriteString(localScript); err != nil {
 		_ = scriptFile.Close()
 		return fmt.Errorf("failed to write temp build script: %w", err)
 	}
@@ -185,7 +187,8 @@ func runLocalBuild(ctx context.Context, cmd *cobra.Command, baseDir, buildComman
 
 func runRemoteBuild(ctx context.Context, cmd *cobra.Command, buildCommand string, target gcissh.Target, remoteServiceDir string) error {
 	fmt.Fprintln(cmd.OutOrStdout(), "running remote build...")
-	script := fmt.Sprintf("cd %s\n%s\n", shellQuote(remoteServiceDir), buildCommand)
+	// Ensure multi-line build scripts stop at the first failing command.
+	script := fmt.Sprintf("set -e\ncd %s\n%s\n", shellQuote(remoteServiceDir), buildCommand)
 	if err := gcissh.RunCommandStream(ctx, target, script, cmd.OutOrStdout(), cmd.ErrOrStderr()); err != nil {
 		return fmt.Errorf(
 			"remote build command failed (check quoting in build_remote): %w\nbuild_remote:\n%s",
