@@ -55,7 +55,7 @@ gci init my_platform
 
 This creates `gci.toml` in the current directory.
 
-Example shape:
+Minimal config example:
 
 ```toml
 name = "my_platform"
@@ -71,14 +71,10 @@ build_forwards = [
   "127.0.0.1:41114:127.0.0.1:41114",
 ]
 
-[driver_docker_swarm]
-app_network = "auto"
-log_services = ["app"]
-
+# define a stack
 [[driver_docker_swarm.stacks]]
 name = "app"
 compose_file = "docker-compose.prod.yaml"
-mode = "services"
 ```
 
 

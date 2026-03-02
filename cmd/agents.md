@@ -80,8 +80,11 @@ exclude_patterns = [".git", "node_modules", "__pycache__", "*.pyc"]
 
 [driver_docker_swarm]
 app_network = "auto"
-log_stack = "my_platform_app"
-log_services = ["app", "migrate"]
+# Optional. If omitted, gci logs shows all services from the last stack.
+log_services = [
+  { stack = "my_platform_app", name = "app" },
+  { stack = "my_platform_app", name = "migrate" },
+]
 
 [[driver_docker_swarm.stacks]]
 name = "my_platform_infra"
@@ -123,8 +126,9 @@ prune_containers_after = "24h"
 - `stacks[].compose_file` entries are always synced, even when `sync_paths` is omitted.
 - `stacks[].mode`: wait strategy (`services` for desired replicas, `job` for one-shot completion).
 - `stacks[].wait_timeout_seconds`: optional custom wait timeout per stack.
-- `log_stack`: optional stack used by `gci logs` (defaults to the last stack).
-- `log_services`: services shown by default in `gci logs`.
+- `log_services`: optional list of `{ stack, name }` entries shown by default in `gci logs`.
+  - `stack` is optional per entry (defaults to the last stack).
+  - when omitted entirely, `gci logs` shows all services from the last stack.
 - `prune_images`: prune unused images post-deploy (default true when omitted).
 - `prune_containers_after`: duration controlling when stopped containers for these stacks are pruned (`"24h"` default, `"none"` disables).
 
@@ -202,8 +206,8 @@ build_forwards = ["127.0.0.1:41114:127.0.0.1:41114"]
 
 [driver_docker_swarm]
 app_network = "auto"
-log_stack = "my_platform_app"
-log_services = ["app"]
+# Optional. If omitted, gci logs shows all services from the last stack.
+log_services = [{ stack = "my_platform_app", name = "app" }]
 
 [[driver_docker_swarm.stacks]]
 name = "my_platform_infra"

@@ -147,10 +147,6 @@ func renderInitConfig(cfg service.Config) string {
 	if cfg.Server != "" {
 		serverLine = fmt.Sprintf("server = %q\n", cfg.Server)
 	}
-	logServices := cfg.DriverDockerSwarm.LogServices
-	if len(logServices) == 0 {
-		logServices = []string{"app"}
-	}
 	pruneContainersAfter := cfg.DriverDockerSwarm.ResolvedPruneContainersAfterLiteral()
 
 	return fmt.Sprintf(`# Service identity
@@ -183,11 +179,12 @@ exclude_patterns = [".git", "node_modules", "__pycache__", "*.pyc"]
 # Shared app network. "auto" => gci_net_<app_name>
 app_network = "auto"
 
-# Optional: stack to target for gci logs (defaults to last stack below)
-# log_stack = "my_service_app"
-
-# Services included in gci logs by default
-log_services = [%s]
+# Optional: services included in gci logs by default.
+# If omitted, gci logs shows all services from the last stack.
+# log_services = [
+#   { stack = "my_service_app", name = "app" },
+#   { stack = "my_service_worker", name = "worker" },
+# ]
 
 [[driver_docker_swarm.stacks]]
 name = %q
@@ -200,15 +197,7 @@ prune_images = %t
 # Remove stopped containers for this service once they are older than the duration below
 # Set to "none" to disable
 prune_containers_after = %q
-`, cfg.Name, serverLine, cfg.BuildLocal, quotedCSV(logServices), cfg.DriverDockerSwarm.Stacks[0].Name, cfg.DriverDockerSwarm.Stacks[0].ComposeFile, cfg.DriverDockerSwarm.PruneImagesEnabled(), pruneContainersAfter)
-}
-
-func quotedCSV(values []string) string {
-	out := make([]string, 0, len(values))
-	for _, value := range values {
-		out = append(out, fmt.Sprintf("%q", value))
-	}
-	return strings.Join(out, ", ")
+`, cfg.Name, serverLine, cfg.BuildLocal, cfg.DriverDockerSwarm.Stacks[0].Name, cfg.DriverDockerSwarm.Stacks[0].ComposeFile, cfg.DriverDockerSwarm.PruneImagesEnabled(), pruneContainersAfter)
 }
 
 func renderExampleCompose(cfg service.Config) string {
