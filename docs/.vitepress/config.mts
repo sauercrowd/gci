@@ -9,7 +9,7 @@ export default defineConfig({
     nav: [
       { text: "Installation", link: "/installation/" },
       { text: "Configuration", link: "/configuration/" },
-      { text: "Reference", link: "/reference/commands" },
+      { text: "Reference", link: "/commands/" },
       { text: "GitHub", link: "https://github.com/sauercrowd/gci" }
     ],
     sidebar: [
@@ -50,8 +50,19 @@ export default defineConfig({
         ]
       },
       {
-        text: "Reference",
-        items: [{ text: "Commands", link: "/reference/commands" }]
+        text: "Commands",
+        items: [
+          { text: "Overview", link: "/commands/" },
+          { text: "Init", link: "/commands/init" },
+          { text: "Deploy", link: "/commands/deploy" },
+          { text: "Status", link: "/commands/status" },
+          { text: "Logs", link: "/commands/logs" },
+          { text: "Server", link: "/commands/server" },
+          { text: "Template", link: "/commands/template" },
+          { text: "Doctor", link: "/commands/doctor" },
+          { text: "Remove Service", link: "/commands/rm" },
+          { text: "agents.md", link: "/commands/agents-md" }
+        ]
       }
     ],
     socialLinks: [

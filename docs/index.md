@@ -45,4 +45,4 @@ For full setup details, start at [Installation](/installation/) and [Example Con
 - [Docker Swarm Configuration](/configuration/docker-swarm)
 - [Example Configurations](/examples/)
 - [Cloudflare Deployment Setup](/installation/cloudflare-deployment)
-- [CLI Command Reference](/reference/commands)
+- [Commands Overview](/commands/)
