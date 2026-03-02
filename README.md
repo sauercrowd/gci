@@ -1,7 +1,5 @@
 # GCI - fly.io like deployments for any server
 
-![](./logo.png)
-
 Fly.io like deployments any VM, Raspberry Pi, or any SSH server.
 
 
