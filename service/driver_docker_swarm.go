@@ -56,9 +56,15 @@ func validateDockerSwarmConfig(cfg DockerSwarmConfig) error {
 		}
 	}
 
-	if cfg.LogStack != "" {
-		if _, ok := names[cfg.LogStack]; !ok {
-			return fmt.Errorf("driver_docker_swarm.log_stack %q is not present in driver_docker_swarm.stacks", cfg.LogStack)
+	for i, item := range cfg.LogServices {
+		prefix := fmt.Sprintf("driver_docker_swarm.log_services[%d]", i)
+		if strings.TrimSpace(item.Name) == "" {
+			return fmt.Errorf("%s.name is required", prefix)
+		}
+		if strings.TrimSpace(item.Stack) != "" {
+			if _, ok := names[item.Stack]; !ok {
+				return fmt.Errorf("%s.stack %q is not present in driver_docker_swarm.stacks", prefix, item.Stack)
+			}
 		}
 	}
 
@@ -176,8 +182,10 @@ func (dockerSwarmDriver) Remove(ctx context.Context, runner RemoteRunner, cfg Co
 
 func (dockerSwarmDriver) Logs(ctx context.Context, runner RemoteRunner, cfg Config, lines int, stdout, stderr io.Writer) error {
 	swarmCfg := *cfg.DriverDockerSwarm
-	stackName := dockerSwarmLogStack(swarmCfg)
-	services := selectedLogServices(swarmCfg)
+	services, err := selectedLogServices(ctx, runner, swarmCfg)
+	if err != nil {
+		return err
+	}
 
 	if stdout == nil {
 		stdout = io.Discard
@@ -186,15 +194,15 @@ func (dockerSwarmDriver) Logs(ctx context.Context, runner RemoteRunner, cfg Conf
 		stderr = io.Discard
 	}
 
-	for i, serviceName := range services {
-		serviceRef := fmt.Sprintf("%s_%s", stackName, serviceName)
+	for i, service := range services {
+		serviceRef := fmt.Sprintf("%s_%s", service.Stack, service.Name)
 		command := fmt.Sprintf("docker service logs --tail %d %s", lines, shellQuote(serviceRef))
 
 		if i > 0 {
 			fmt.Fprintln(stdout)
 		}
 
-		header := fmt.Sprintf("===== %s.%s =====\n", stackName, serviceName)
+		header := fmt.Sprintf("===== %s.%s =====\n", service.Stack, service.Name)
 		fmt.Fprint(stdout, header)
 
 		errWriter := &logHeaderOnceWriter{
@@ -203,7 +211,7 @@ func (dockerSwarmDriver) Logs(ctx context.Context, runner RemoteRunner, cfg Conf
 		}
 
 		if err := runner.Stream(ctx, command, stdout, errWriter); err != nil {
-			return fmt.Errorf("failed to fetch docker swarm logs for service %q in stack %q: %w", serviceName, stackName, err)
+			return fmt.Errorf("failed to fetch docker swarm logs for service %q in stack %q: %w", service.Name, service.Stack, err)
 		}
 	}
 
@@ -212,13 +220,15 @@ func (dockerSwarmDriver) Logs(ctx context.Context, runner RemoteRunner, cfg Conf
 
 func (dockerSwarmDriver) LogsStream(ctx context.Context, runner RemoteRunner, cfg Config, lines int, stdout, stderr io.Writer) error {
 	swarmCfg := *cfg.DriverDockerSwarm
-	services := selectedLogServices(swarmCfg)
+	services, err := selectedLogServices(ctx, runner, swarmCfg)
+	if err != nil {
+		return err
+	}
 	if len(services) != 1 {
 		return fmt.Errorf("streaming logs requires exactly one service; set driver_docker_swarm.log_services to one entry or pass --service")
 	}
 
-	stackName := dockerSwarmLogStack(swarmCfg)
-	serviceRef := fmt.Sprintf("%s_%s", stackName, services[0])
+	serviceRef := fmt.Sprintf("%s_%s", services[0].Stack, services[0].Name)
 	command := fmt.Sprintf("docker service logs --tail %d --follow %s", lines, shellQuote(serviceRef))
 	if err := runner.Stream(ctx, command, stdout, stderr); err != nil {
 		return fmt.Errorf("failed to stream docker swarm logs: %w", err)
@@ -536,10 +546,7 @@ func dockerDurationLiteral(d time.Duration) string {
 	return d.String()
 }
 
-func dockerSwarmLogStack(cfg DockerSwarmConfig) string {
-	if strings.TrimSpace(cfg.LogStack) != "" {
-		return cfg.LogStack
-	}
+func defaultDockerSwarmLogStack(cfg DockerSwarmConfig) string {
 	return cfg.Stacks[len(cfg.Stacks)-1].Name
 }
 
@@ -605,24 +612,69 @@ func (l *logHeaderOnceWriter) Write(p []byte) (int, error) {
 	return l.w.Write(p)
 }
 
-func selectedLogServices(cfg DockerSwarmConfig) []string {
+func selectedLogServices(ctx context.Context, runner RemoteRunner, cfg DockerSwarmConfig) ([]DockerSwarmLogService, error) {
 	if len(cfg.LogServices) > 0 {
-		out := make([]string, 0, len(cfg.LogServices))
+		out := make([]DockerSwarmLogService, 0, len(cfg.LogServices))
 		seen := map[string]struct{}{}
+		defaultStack := defaultDockerSwarmLogStack(cfg)
 		for _, item := range cfg.LogServices {
-			name := strings.TrimSpace(item)
+			name := strings.TrimSpace(item.Name)
 			if name == "" {
 				continue
 			}
-			if _, ok := seen[name]; ok {
+			stack := strings.TrimSpace(item.Stack)
+			if stack == "" {
+				stack = defaultStack
+			}
+			key := stack + "\x00" + name
+			if _, ok := seen[key]; ok {
 				continue
 			}
-			seen[name] = struct{}{}
-			out = append(out, name)
+			seen[key] = struct{}{}
+			out = append(out, DockerSwarmLogService{Stack: stack, Name: name})
 		}
 		if len(out) > 0 {
-			return out
+			return out, nil
 		}
 	}
-	return []string{"app"}
+
+	stack := defaultDockerSwarmLogStack(cfg)
+	serviceNames, err := dockerSwarmStackServiceNames(ctx, runner, stack)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]DockerSwarmLogService, 0, len(serviceNames))
+	for _, name := range serviceNames {
+		out = append(out, DockerSwarmLogService{Stack: stack, Name: name})
+	}
+	return out, nil
+}
+
+func dockerSwarmStackServiceNames(ctx context.Context, runner RemoteRunner, stackName string) ([]string, error) {
+	command := fmt.Sprintf("docker stack services %s --format '{{.Name}}'", shellQuote(stackName))
+	result, err := runner.Run(ctx, command)
+	if err != nil {
+		return nil, commandError(fmt.Sprintf("failed to list docker stack services for stack %q", stackName), err, result)
+	}
+
+	lines := strings.Split(strings.TrimSpace(result.Stdout), "\n")
+	out := make([]string, 0, len(lines))
+	seen := map[string]struct{}{}
+	prefix := stackName + "_"
+	for _, line := range lines {
+		fullName := strings.TrimSpace(line)
+		if fullName == "" {
+			continue
+		}
+		name := strings.TrimPrefix(fullName, prefix)
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("no services found for stack %q", stackName)
+	}
+	return out, nil
 }
