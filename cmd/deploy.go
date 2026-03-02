@@ -66,7 +66,12 @@ var deployCmd = &cobra.Command{
 		if cfg.DriverDockerSwarm != nil {
 			renderCtx.AppNetwork = cfg.DriverDockerSwarm.ResolvedAppNetwork(cfg.Name)
 		}
-		if localBuild := strings.TrimSpace(cfg.BuildLocal); localBuild != "" {
+		localBuild := strings.TrimSpace(cfg.BuildLocal)
+		remoteBuild := strings.TrimSpace(cfg.BuildRemote)
+		if localBuild == "" && remoteBuild == "" {
+			fmt.Fprintln(cmd.ErrOrStderr(), "warning: neither build_local nor build_remote is configured; skipping build steps")
+		}
+		if localBuild != "" {
 			renderedLocalBuild, err := renderTemplateString("build_local", localBuild, baseDir, renderCtx)
 			if err != nil {
 				return fmt.Errorf("failed to render build_local template: %w", err)
@@ -83,7 +88,7 @@ var deployCmd = &cobra.Command{
 			return err
 		}
 
-		if remoteBuild := strings.TrimSpace(cfg.BuildRemote); remoteBuild != "" {
+		if remoteBuild != "" {
 			renderedRemoteBuild, err := renderTemplateString("build_remote", remoteBuild, baseDir, renderCtx)
 			if err != nil {
 				return fmt.Errorf("failed to render build_remote template: %w", err)
@@ -91,6 +96,9 @@ var deployCmd = &cobra.Command{
 			if err := runRemoteBuild(cmd.Context(), cmd, renderedRemoteBuild, target, remoteServiceDir); err != nil {
 				return err
 			}
+		}
+		if err := syncRenderedComposeFiles(cmd.Context(), cmd, cfg, target, baseDir, remoteServiceDir, renderCtx); err != nil {
+			return err
 		}
 
 		driver, err := service.ResolveDriver(cfg)
@@ -229,4 +237,72 @@ func resolveServiceConfigPath(explicitPath string) (string, error) {
 		return "", fmt.Errorf("failed to stat %q: %w", defaultPath, err)
 	}
 	return filepath.Abs(defaultPath)
+}
+
+func syncRenderedComposeFiles(
+	ctx context.Context,
+	cmd *cobra.Command,
+	cfg service.Config,
+	target gcissh.Target,
+	baseDir string,
+	remoteServiceDir string,
+	renderCtx templateContext,
+) error {
+	if cfg.DriverDockerSwarm == nil {
+		return nil
+	}
+
+	composePaths := make([]string, 0, len(cfg.DriverDockerSwarm.Stacks))
+	seen := map[string]struct{}{}
+	for _, stack := range cfg.DriverDockerSwarm.Stacks {
+		composePath := strings.TrimSpace(stack.ComposeFile)
+		if composePath == "" {
+			continue
+		}
+		if filepath.IsAbs(composePath) {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: skipping automatic render for absolute compose path %q\n", composePath)
+			continue
+		}
+		if _, ok := seen[composePath]; ok {
+			continue
+		}
+		seen[composePath] = struct{}{}
+		composePaths = append(composePaths, composePath)
+	}
+	if len(composePaths) == 0 {
+		return nil
+	}
+
+	tempDir, err := os.MkdirTemp("", "gci-compose-render-*")
+	if err != nil {
+		return fmt.Errorf("failed to create temp directory for rendered compose files: %w", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	for _, composePath := range composePaths {
+		sourcePath := filepath.Join(baseDir, filepath.FromSlash(composePath))
+		content, err := os.ReadFile(sourcePath)
+		if err != nil {
+			return fmt.Errorf("failed to read compose file %q: %w", composePath, err)
+		}
+
+		rendered, err := renderTemplateString(composePath, string(content), baseDir, renderCtx)
+		if err != nil {
+			return fmt.Errorf("failed to render compose file %q: %w", composePath, err)
+		}
+
+		renderedPath := filepath.Join(tempDir, filepath.FromSlash(composePath))
+		if err := os.MkdirAll(filepath.Dir(renderedPath), 0o755); err != nil {
+			return fmt.Errorf("failed to create temp directory for %q: %w", composePath, err)
+		}
+		if err := os.WriteFile(renderedPath, []byte(rendered), 0o644); err != nil {
+			return fmt.Errorf("failed to write rendered compose file %q: %w", composePath, err)
+		}
+	}
+
+	fmt.Fprintln(cmd.OutOrStdout(), "syncing rendered compose files...")
+	if err := gcissh.SyncPaths(ctx, target, tempDir, composePaths, nil, remoteServiceDir); err != nil {
+		return fmt.Errorf("failed to sync rendered compose files: %w", err)
+	}
+	return nil
 }

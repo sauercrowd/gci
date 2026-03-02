@@ -134,3 +134,25 @@ Template variables/functions:
 - `{{ app_network }}`
 
 The same template values/functions are also rendered in `build_local` and `build_remote` during `gci deploy`.
+
+## Documentation site (VitePress)
+
+This repo includes a VitePress docs site in `docs/`.
+
+Local docs development:
+
+```bash
+pnpm install
+pnpm docs:dev
+```
+
+Production build:
+
+```bash
+pnpm docs:build
+```
+
+Cloudflare Pages deployment is configured via GitHub Actions:
+
+- `.github/workflows/deploy-docs-cloudflare.yml`
+- `docs/guide/deployment-setup.md`
