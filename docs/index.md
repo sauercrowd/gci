@@ -44,5 +44,4 @@ For full setup details, start at [Installation](/installation/) and [Example Con
 - [Sync Configuration](/configuration/sync)
 - [Docker Swarm Configuration](/configuration/docker-swarm)
 - [Example Configurations](/examples/)
-- [Cloudflare Deployment Setup](/installation/cloudflare-deployment)
 - [Commands Overview](/commands/)

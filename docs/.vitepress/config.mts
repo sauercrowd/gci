@@ -19,7 +19,6 @@ export default defineConfig({
           { text: "Overview", link: "/installation/" },
           { text: "Server Side", link: "/installation/server-side" },
           { text: "Client Side", link: "/installation/client-side" },
-          { text: "Cloudflare Deployment", link: "/installation/cloudflare-deployment" }
         ]
       },
       {
