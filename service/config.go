@@ -23,12 +23,16 @@ type Config struct {
 }
 
 type DockerSwarmConfig struct {
-	AppNetwork           string             `toml:"app_network,omitempty"`
-	LogStack             string             `toml:"log_stack,omitempty"`
-	LogServices          []string           `toml:"log_services,omitempty"`
-	Stacks               []DockerSwarmStack `toml:"stacks"`
-	PruneImages          *bool              `toml:"prune_images,omitempty"`
-	PruneContainersAfter *string            `toml:"prune_containers_after,omitempty"`
+	AppNetwork           string                  `toml:"app_network,omitempty"`
+	LogServices          []DockerSwarmLogService `toml:"log_services,omitempty"`
+	Stacks               []DockerSwarmStack      `toml:"stacks"`
+	PruneImages          *bool                   `toml:"prune_images,omitempty"`
+	PruneContainersAfter *string                 `toml:"prune_containers_after,omitempty"`
+}
+
+type DockerSwarmLogService struct {
+	Stack string `toml:"stack,omitempty"`
+	Name  string `toml:"name"`
 }
 
 type DockerSwarmStack struct {
@@ -159,8 +163,7 @@ func NewDefaultConfig(serviceName, serverName string) Config {
 			"*.pyc",
 		},
 		DriverDockerSwarm: &DockerSwarmConfig{
-			AppNetwork:  "auto",
-			LogServices: []string{"app"},
+			AppNetwork: "auto",
 			Stacks: []DockerSwarmStack{
 				{
 					Name:        serviceName,

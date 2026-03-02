@@ -40,7 +40,11 @@ func newLogCommand() *cobra.Command {
 				return err
 			}
 			if cfg.DriverDockerSwarm != nil && len(services) > 0 {
-				cfg.DriverDockerSwarm.LogServices = services
+				overrides := make([]service.DockerSwarmLogService, 0, len(services))
+				for _, item := range services {
+					overrides = append(overrides, service.DockerSwarmLogService{Name: item})
+				}
+				cfg.DriverDockerSwarm.LogServices = overrides
 			}
 
 			resolvedServer := serverName
