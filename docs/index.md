@@ -9,7 +9,7 @@ Fly.io style deployments for any VM, Raspberry Pi, or SSH server.
 - Deploy status monitoring
 - Configurable stack deployment with `gci.toml`
 
-## Quickstart in 3 Steps
+## Quickstart
 
 1. Register a server:
 
