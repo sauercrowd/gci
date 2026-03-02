@@ -5,9 +5,10 @@
 Fly.io like deployments any VM, Raspberry Pi, or any SSH server.
 
 
+It's just a CLI, only requires docker swarm and ssh on the remote host.
+
 ## Quickstart
 
-It's just a CLI, only requires docker swarm and ssh on the remote host.
 
 It comes with a `gci agents.md` command that will describe your favourite coding tool how to set it up and use it.
 
@@ -15,7 +16,7 @@ It comes with a `gci agents.md` command that will describe your favourite coding
 <details>
 <summary>Setup</summary>
 
-## Server side setup
+#### Server side setup
 Your server needs to have ssh set up and docker installed ([Docker setup guide](https://docs.docker.com/engine/install/))
 
 After installing,  initialize a new swarm setup with `docker swarm init` (this can be joined by other machines later if you like, but is not required)
@@ -27,7 +28,7 @@ docker run -d --name local-registry --restart always -p 127.0.0.1:41114:5000 reg
 
 GCI takes care of proxying docker requests at the right time to the registry, so you dont have to worry about that.
 
-## Client side setup
+#### Client side setup
 
 On the host where you're invoking the gci command, simply install it with
 
