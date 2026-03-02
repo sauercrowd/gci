@@ -9,31 +9,38 @@ Fly.io like deployments any VM, Raspberry Pi, or any SSH server.
 
 It's just a CLI, only requires docker swarm and ssh on the remote host.
 
-Here's the great news: it comes with a `gci agents.md` command that will describe your favourite coding tool how to set it up and use it.
+It comes with a `gci agents.md` command that will describe your favourite coding tool how to set it up and use it.
 
 
 <details>
-<summary>Prerequisites</summary>
+<summary>Setup</summary>
 
-- any server with ssh and docker swarm enabled+initialized
-- a docker registry. you can just start one on the remote server with 
+## Server side setup
+Your server needs to have ssh set up and docker installed ([Docker setup guide](https://docs.docker.com/engine/install/))
+
+After installing,  initialize a new swarm setup with `docker swarm init` (this can be joined by other machines later if you like, but is not required)
+
+It's recommended to setup a docker registry (non-public, bound to localhost), which you can do with
 ```
 docker run -d --name local-registry --restart always -p 127.0.0.1:41114:5000 registry:3
 ```
 
-</details>
-<details>
-<summary>Installation</summary>
+GCI takes care of proxying docker requests at the right time to the registry, so you dont have to worry about that.
 
-Only needed on the client, there is no additional software needed on the server
+## Client side setup
+
+On the host where you're invoking the gci command, simply install it with
 
 ```
 go install https://github.com/sauercrowd/gci
 ```
 
+You dont need any other dependencies
+
 </details>
 
-1. Register a server (the remote VM, needs to have docker swarm installed and initalized)
+
+1. Register a server - a single server can be used for as many apps as you like. it just acts as an alias.
 
 ```bash
 gci server add prod \
@@ -41,7 +48,7 @@ gci server add prod \
   --private-key ~/.ssh/id_rsa \
 ```
 
-2. Initialize a stack
+2. Initialize a GCI app (can include/manage many different containers)
 
 ```bash
 gci init my_platform
@@ -55,56 +62,26 @@ Example shape:
 name = "my_platform"
 server = "prod"
 
-## run locally
 build_local = """
 docker build -t 127.0.0.1:41114/my_service .
 docker push 127.0.0.1:41114/my_service
-# or use git sha template values:
-# docker build -t 127.0.0.1:41114/my_service:{{ .GitShortSHA }} .
 """
 
-# alternatively, you can also (or only) run a command on the remote
-# e.g. if you just want to sync all the code to the target machine and build images there
-# this step is executed after the sync step
-# build_remote = """
-# docker build -t 127.0.0.1:41114/my_service .
-# docker push 127.0.0.1:41114/my_service
-# """
-
 # local TCP forwards active during local build (SSH -L style)
-# so we can reach the registry bound to localhost on the server
 build_forwards = [
   "127.0.0.1:41114:127.0.0.1:41114",
 ]
 
-# Optional extra files/dirs to sync; compose_file entries are always synced automatically
-# sync_paths = ["./ops", "./scripts"]
-
-# currently only supports docker swarm, but might support others in the future
 [driver_docker_swarm]
 app_network = "auto"
-log_services = ["app", "migrate"]
+log_services = ["app"]
 
 [[driver_docker_swarm.stacks]]
-name = "my_platform_infra"
-compose_file = "docker-compose.infra.yaml"
-mode = "services"
-
-[[driver_docker_swarm.stacks]]
-name = "my_platform_migration"
-compose_file = "docker-compose.migration.yaml"
-mode = "job"
-
-[[driver_docker_swarm.stacks]]
-name = "my_platform_app"
+name = "app"
 compose_file = "docker-compose.prod.yaml"
 mode = "services"
-
-prune_images = true
-prune_containers_after = "24h"
 ```
 
-`prune_containers_after` controls how long stopped containers from the managed stacks are kept around; set it to `"none"` to disable container pruning.
 
 3. Deploy
 
@@ -113,21 +90,18 @@ gci deploy
 ```
 
 Deploy does:
-1. run local `build_local`
-2. sync all `stacks[].compose_file` paths plus optional `sync_paths` to `<service_dir>/<service_name>` over SSH (`tar.gz` stream)
-3. run remote `build_remote` in the synced remote service directory
-4. run driver deploy
+1. Execute your build step (+ proxy the ports specified)
+2. sync your docker compose file
+3. (re)deploy your services, monitoring for their success
 
-4. Observe Runtime
-
-Service status:
+### Other commands
+Show the status of all containers of your app
 
 ```bash
 gci status
 ```
 
 Logs:
-
 ```bash
 gci logs
 ```
@@ -138,6 +112,10 @@ LLM-oriented project and config reference:
 gci agents.md
 ```
 
+
+## Advanced commands
+To make it easier to update containers at the right time, GCI includes a templating tool
+that injects a few variables into build_step but can also be triggered independently.
 Template rendering with git/deploy context:
 
 ```bash
