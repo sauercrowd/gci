@@ -28,10 +28,28 @@ GCI takes care of proxying docker requests at the right time to the registry, so
 
 #### Client side setup
 
-On the host where you're invoking the gci command, simply install it with
+On Linux/macOS, install the latest release binary with:
 
+```bash
+curl -fsSL https://raw.githubusercontent.com/sauercrowd/gci/main/install.sh | sh
 ```
-go install https://github.com/sauercrowd/gci
+
+Pin a specific version:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sauercrowd/gci/main/install.sh | sh -s -- --version v0.1.0
+```
+
+On Windows (PowerShell):
+
+```powershell
+iwr https://raw.githubusercontent.com/sauercrowd/gci/main/install.ps1 -UseBasicParsing | iex
+```
+
+Or install from source with Go:
+
+```bash
+go install github.com/sauercrowd/gci@latest
 ```
 
 You dont need any other dependencies
@@ -138,3 +156,19 @@ Template variables/functions:
 - `{{ app_network }}`
 
 The same template values/functions are also rendered in `build_local` and `build_remote` during `gci deploy`.
+
+## Releasing binaries
+
+GitHub Actions builds release binaries for:
+- linux amd64/arm64
+- darwin amd64/arm64
+- windows amd64/arm64
+
+To publish a new release, push a version tag:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+This runs `.github/workflows/release.yml` and publishes archives to GitHub Releases.
