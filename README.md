@@ -1,5 +1,15 @@
 # GCI
 
+Fly.io style deployments for any VM, Raspberry Pi, or SSH server.
+
+Full documentation: https://gci.jonas.foo
+
+## What You Get
+- SSH-based deployments, powered by Docker Swarm (no additional software on the server)
+- Local and remote build
+- Deploy status monitoring
+- Configurable deployment with gci.toml
+
 ## Quickstart
 
 1. Register a server - a single server can be used for as many apps as you like. it just acts as an alias.
