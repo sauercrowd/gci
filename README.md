@@ -21,9 +21,13 @@ go install github.com/sauercrowd/gci@latest
 
 Or use the release install scripts:
 
+MacOS/Linux
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sauercrowd/gci/main/scripts/install.sh | sh
 ```
+
+Windows
 
 ```powershell
 irm https://raw.githubusercontent.com/sauercrowd/gci/main/scripts/install.ps1 | iex
