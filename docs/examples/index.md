@@ -5,6 +5,7 @@ Each page includes the matching `docker-compose*.yaml` snippet.
 
 ## Available Examples
 
+- [GitHub Actions Deploy](/examples/github-actions)
 - [Local Build](/examples/local-build)
 - [Remote Build](/examples/remote-build)
 - [Postgres](/examples/postgres)
