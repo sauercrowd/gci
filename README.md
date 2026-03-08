@@ -11,6 +11,26 @@ Full documentation: https://gci.jonas.foo
 - Deploy status monitoring
 - Configurable deployment with gci.toml
 
+## Install
+
+Install with Go:
+
+```bash
+go install github.com/sauercrowd/gci@latest
+```
+
+Or use the release install scripts:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sauercrowd/gci/main/scripts/install.sh | sh
+```
+
+```powershell
+irm https://raw.githubusercontent.com/sauercrowd/gci/main/scripts/install.ps1 | iex
+```
+
+For manual binary downloads and platform-specific details, see <https://gci.jonas.foo/installation/client-side>.
+
 ## Quickstart
 
 1. Register a server - a single server can be used for as many apps as you like. it just acts as an alias.
