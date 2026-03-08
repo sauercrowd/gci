@@ -1,0 +1,15 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "gci",
+	"compatibility_date": "2026-03-02",
+	"assets": {
+		// The path to the directory containing the `index.html` file to be served at `/`
+		"directory": "docs/.vitepress/dist/"
+	},
+	"observability": {
+		"enabled": true
+	},
+	"compatibility_flags": [
+		"nodejs_compat"
+	]
+}

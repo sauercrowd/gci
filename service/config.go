@@ -182,9 +182,6 @@ func (c Config) Validate() error {
 		return fmt.Errorf("name is required")
 	}
 
-	if strings.TrimSpace(c.BuildLocal) == "" && strings.TrimSpace(c.BuildRemote) == "" {
-		return fmt.Errorf("at least one of build_local or build_remote is required")
-	}
 	for _, spec := range c.BuildForwards {
 		if _, err := gcissh.ParseForwardSpec(spec); err != nil {
 			return fmt.Errorf("invalid build_forwards entry %q: %w", spec, err)
