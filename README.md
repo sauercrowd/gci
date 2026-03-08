@@ -1,6 +1,7 @@
 # GCI
 
-Fly.io style deployments for any VM, Raspberry Pi, or SSH server.
+A CLI for Fly.io style deployments for any VM, Raspberry Pi, or SSH server.
+Powered by docker swarm.
 
 Full documentation: https://gci.jonas.foo
 
