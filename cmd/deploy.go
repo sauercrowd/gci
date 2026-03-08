@@ -8,7 +8,6 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	servercmd "github.com/sauercrowd/gci/cmd/server"
@@ -155,7 +154,7 @@ func runLocalBuild(ctx context.Context, cmd *cobra.Command, baseDir, buildComman
 	build.Dir = baseDir
 	build.Stdout = cmd.OutOrStdout()
 	build.Stderr = cmd.ErrOrStderr()
-	build.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	configureBuildCommand(build)
 
 	if err := build.Start(); err != nil {
 		return fmt.Errorf("failed to start build command: %w", err)
@@ -171,11 +170,11 @@ func runLocalBuild(ctx context.Context, cmd *cobra.Command, baseDir, buildComman
 	case runErr = <-waitCh:
 	case <-ctx.Done():
 		if build.Process != nil {
-			_ = syscall.Kill(-build.Process.Pid, syscall.SIGTERM)
+			_ = terminateBuildProcess(build.Process)
 			select {
 			case <-waitCh:
 			case <-time.After(2 * time.Second):
-				_ = syscall.Kill(-build.Process.Pid, syscall.SIGKILL)
+				_ = killBuildProcess(build.Process)
 				<-waitCh
 			}
 		}
