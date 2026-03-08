@@ -95,7 +95,7 @@ echo "Installed gci to $BIN_DIR/gci"
 case ":${PATH:-}:" in
   *:"$BIN_DIR":*) ;;
   *)
-    echo "Add $BIN_DIR to your PATH to run gci without a full path."
+    echo "Make sure $BIN_DIR is in your PATH to run gci without a full path."
     ;;
 esac
 "$BIN_DIR/gci" --help >/dev/null 2>&1 || true
