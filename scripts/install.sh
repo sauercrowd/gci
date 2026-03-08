@@ -3,7 +3,7 @@ set -eu
 
 REPO="sauercrowd/gci"
 VERSION="${GCI_VERSION:-latest}"
-BIN_DIR="${GCI_INSTALL_DIR:-/usr/local/bin}"
+BIN_DIR="${GCI_INSTALL_DIR:-$HOME/.local/bin}"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -92,4 +92,10 @@ else
 fi
 
 echo "Installed gci to $BIN_DIR/gci"
+case ":${PATH:-}:" in
+  *:"$BIN_DIR":*) ;;
+  *)
+    echo "Add $BIN_DIR to your PATH to run gci without a full path."
+    ;;
+esac
 "$BIN_DIR/gci" --help >/dev/null 2>&1 || true

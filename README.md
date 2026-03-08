@@ -94,4 +94,3 @@ Template variables/functions:
 - `{{ app_network }}`
 
 The same template values/functions are also rendered in `build_local` and `build_remote` during `gci deploy`.
-

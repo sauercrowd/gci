@@ -10,7 +10,7 @@ if (-not $Version -or $Version -eq "") {
 }
 
 if (-not $InstallDir -or $InstallDir -eq "") {
-  $InstallDir = Join-Path $HOME "bin"
+  $InstallDir = Join-Path $HOME "AppData\\Local\\gci\\bin"
 }
 
 $repo = "sauercrowd/gci"
