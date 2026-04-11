@@ -67,6 +67,9 @@ build_forwards = [
   "127.0.0.1:41114:127.0.0.1:41114",
 ]
 
+[driver_docker_swarm]
+force_restart_services = true
+
 # define a stack
 [[driver_docker_swarm.stacks]]
 name = "app"

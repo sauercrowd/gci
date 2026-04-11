@@ -26,6 +26,7 @@ type DockerSwarmConfig struct {
 	AppNetwork           string                  `toml:"app_network,omitempty"`
 	LogServices          []DockerSwarmLogService `toml:"log_services,omitempty"`
 	Stacks               []DockerSwarmStack      `toml:"stacks"`
+	ForceRestartServices *bool                   `toml:"force_restart_services,omitempty"`
 	PruneImages          *bool                   `toml:"prune_images,omitempty"`
 	PruneContainersAfter *string                 `toml:"prune_containers_after,omitempty"`
 }
@@ -51,6 +52,10 @@ var defaultDockerSwarmContainerPruneAfterLiteral = FormatDurationLiteral(default
 
 func (c DockerSwarmConfig) PruneImagesEnabled() bool {
 	return c.PruneImages == nil || *c.PruneImages
+}
+
+func (c DockerSwarmConfig) ForceRestartServicesEnabled() bool {
+	return c.ForceRestartServices == nil || *c.ForceRestartServices
 }
 
 func (c DockerSwarmConfig) PruneContainersAfterDuration() (time.Duration, bool) {
@@ -149,6 +154,7 @@ func FormatDurationLiteral(d time.Duration) string {
 }
 
 func NewDefaultConfig(serviceName, serverName string) Config {
+	forceRestartServices := true
 	pruneImages := true
 	pruneContainersAfter := defaultDockerSwarmContainerPruneAfterLiteral
 
@@ -171,6 +177,7 @@ func NewDefaultConfig(serviceName, serverName string) Config {
 					Mode:        "services",
 				},
 			},
+			ForceRestartServices: &forceRestartServices,
 			PruneImages:          &pruneImages,
 			PruneContainersAfter: &pruneContainersAfter,
 		},

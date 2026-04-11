@@ -37,6 +37,7 @@ exclude_patterns = [".git", "node_modules", "__pycache__", "*.pyc"]
 
 [driver_docker_swarm]
 app_network = "auto"
+force_restart_services = true
 prune_images = true
 prune_containers_after = "24h"
 log_services = [

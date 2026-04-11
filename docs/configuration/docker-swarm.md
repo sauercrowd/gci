@@ -35,6 +35,13 @@ log_services = [
 ]
 ```
 
+## `force_restart_services`
+
+- Type: `bool`
+- Optional, default `true`.
+- After each successful `docker stack deploy`, runs `docker service update --force` for every service in stacks with `mode = "services"`.
+- Use this to guarantee a rollout even when the image tag and rendered service spec have not changed.
+
 ## `stacks`
 
 - Type: `[[driver_docker_swarm.stacks]]`

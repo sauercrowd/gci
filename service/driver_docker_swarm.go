@@ -102,6 +102,16 @@ func (dockerSwarmDriver) Deploy(ctx context.Context, runner RemoteRunner, cfg Co
 			return fmt.Errorf("failed to deploy docker stack %q: %w", stack.Name, err)
 		}
 
+		if mode == dockerSwarmStackModeServices && swarmCfg.ForceRestartServicesEnabled() {
+			if err := forceRestartDockerSwarmStackServices(ctx, runner, stack.Name, stdout, stderr); err != nil {
+				fmt.Fprintf(stderr, "forced service restart failed for stack %q, collecting recent service logs...\n", stack.Name)
+				diagCtx, cancel := diagnosticContext()
+				defer cancel()
+				dumpDockerSwarmStackLogs(diagCtx, runner, stack.Name, 50, stderr)
+				return err
+			}
+		}
+
 		if err := waitForDockerSwarmStack(ctx, runner, stack, stdout); err != nil {
 			fmt.Fprintf(stderr, "stack %q failed to reach stable state, collecting recent service logs...\n", stack.Name)
 			diagCtx, cancel := diagnosticContext()
@@ -508,6 +518,29 @@ func ensureDockerSwarmNetwork(ctx context.Context, runner RemoteRunner, networkN
 	if err := runner.Stream(ctx, command, stdout, stderr); err != nil {
 		return fmt.Errorf("failed to ensure app network %q exists: %w", networkName, err)
 	}
+	return nil
+}
+
+func forceRestartDockerSwarmStackServices(ctx context.Context, runner RemoteRunner, stackName string, stdout, stderr io.Writer) error {
+	serviceNames, err := dockerSwarmStackServiceNames(ctx, runner, stackName)
+	if err != nil {
+		return err
+	}
+	if len(serviceNames) == 0 {
+		fmt.Fprintf(stdout, "stack %q has no services to restart\n", stackName)
+		return nil
+	}
+
+	fmt.Fprintf(stdout, "force restarting services for stack %q...\n", stackName)
+	for _, serviceName := range serviceNames {
+		serviceRef := fmt.Sprintf("%s_%s", stackName, serviceName)
+		fmt.Fprintf(stdout, "force restarting service %q\n", serviceRef)
+		command := fmt.Sprintf("docker service update --force %s", shellQuote(serviceRef))
+		if err := runner.Stream(ctx, command, stdout, stderr); err != nil {
+			return fmt.Errorf("failed to force restart docker service %q in stack %q: %w", serviceName, stackName, err)
+		}
+	}
+
 	return nil
 }
 

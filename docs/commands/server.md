@@ -16,6 +16,15 @@ Useful flags:
 - `--service-dir <path>`: remote base directory for services.
 - `--skip-check`: skip SSH connectivity validation.
 
+## Execute a command on a server
+
+```bash
+gci server exec <server> <command> [args...]
+```
+
+If no command is given, `gci` opens an interactive login shell.
+When run from a terminal, `gci` requests a remote PTY and forwards stdin/stdout/stderr so interactive programs should work.
+
 ## List servers
 
 ```bash

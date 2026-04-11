@@ -179,6 +179,10 @@ exclude_patterns = [".git", "node_modules", "__pycache__", "*.pyc"]
 # Shared app network. "auto" => gci_net_<app_name>
 app_network = "auto"
 
+# Force every service in each "services" stack to roll after deploy, even if the image tag
+# or rendered stack spec did not change.
+force_restart_services = %t
+
 # Optional: services included in gci logs by default.
 # If omitted, gci logs shows all services from the last stack.
 # log_services = [
@@ -197,7 +201,7 @@ prune_images = %t
 # Remove stopped containers for this service once they are older than the duration below
 # Set to "none" to disable
 prune_containers_after = %q
-`, cfg.Name, serverLine, cfg.BuildLocal, cfg.DriverDockerSwarm.Stacks[0].Name, cfg.DriverDockerSwarm.Stacks[0].ComposeFile, cfg.DriverDockerSwarm.PruneImagesEnabled(), pruneContainersAfter)
+`, cfg.Name, serverLine, cfg.BuildLocal, cfg.DriverDockerSwarm.ForceRestartServicesEnabled(), cfg.DriverDockerSwarm.Stacks[0].Name, cfg.DriverDockerSwarm.Stacks[0].ComposeFile, cfg.DriverDockerSwarm.PruneImagesEnabled(), pruneContainersAfter)
 }
 
 func renderExampleCompose(cfg service.Config) string {

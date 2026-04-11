@@ -10,6 +10,7 @@ func NewCommand() *cobra.Command {
 
 	serverCmd.AddCommand(newAddCommand())
 	serverCmd.AddCommand(newAddLabelCommand())
+	serverCmd.AddCommand(newExecCommand())
 	serverCmd.AddCommand(newLsCommand())
 	serverCmd.AddCommand(newRmCommand())
 	serverCmd.AddCommand(newRemoveLabelCommand())
