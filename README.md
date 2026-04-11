@@ -19,18 +19,12 @@ Install with Go:
 go install github.com/sauercrowd/gci@latest
 ```
 
-Or use the release install scripts:
+Or use the release install script:
 
-MacOS/Linux
+macOS/Linux
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sauercrowd/gci/main/scripts/install.sh | sh
-```
-
-Windows
-
-```powershell
-irm https://raw.githubusercontent.com/sauercrowd/gci/main/scripts/install.ps1 | iex
 ```
 
 For manual binary downloads and platform-specific details, see <https://gci.jonas.foo/installation/client-side>.

@@ -11,7 +11,6 @@ builds:
     goos:
       - linux
       - darwin
-      - windows
     goarch:
       - amd64
       - arm64
@@ -26,9 +25,6 @@ archives:
       - gci
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     files: []
-    format_overrides:
-      - goos: windows
-        format: zip
 
 checksum:
   name_template: checksums.txt
