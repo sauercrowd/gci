@@ -35,6 +35,7 @@ export default defineConfig({
         text: "Example Configurations",
         items: [
           { text: "Overview", link: "/examples/" },
+          { text: "GitHub Actions Deploy", link: "/examples/github-actions" },
           { text: "Local Build", link: "/examples/local-build" },
           { text: "Remote Build", link: "/examples/remote-build" },
           { text: "Postgres", link: "/examples/postgres" },
