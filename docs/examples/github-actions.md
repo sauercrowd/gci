@@ -36,7 +36,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install GCI
-        run: go install https://github.com/sauercrowd/gci@latest
+        run: go install github.com/sauercrowd/gci@latest
 
       - name: Add GCI to PATH
         run: echo "$HOME/go/bin" >> "$GITHUB_PATH"
