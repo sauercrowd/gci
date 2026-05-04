@@ -5,7 +5,7 @@
 On your local machine:
 
 ```bash
-go install https://github.com/sauercrowd/gci
+go install github.com/sauercrowd/gci
 ```
 
 If you prefer to install from release binaries without running an install script, download the archive for your platform from the GitHub releases page:
