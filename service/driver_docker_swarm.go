@@ -123,7 +123,7 @@ func (dockerSwarmDriver) Deploy(ctx context.Context, runner RemoteRunner, cfg Co
 
 	if swarmCfg.PruneImagesEnabled() {
 		fmt.Fprintln(stdout, "pruning unused docker images...")
-		if err := runner.Stream(ctx, "docker image prune -f", stdout, stderr); err != nil {
+		if err := runner.Stream(ctx, "docker image prune -a -f", stdout, stderr); err != nil {
 			return fmt.Errorf("failed to prune docker images: %w", err)
 		}
 	}

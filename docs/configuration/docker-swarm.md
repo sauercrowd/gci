@@ -68,7 +68,7 @@ wait_timeout_seconds = 300
 
 - Type: `bool`
 - Optional, default `true`.
-- Runs `docker image prune -f` after successful deploy when enabled.
+- Runs `docker image prune -a -f` after successful deploy when enabled.
 
 ## `prune_containers_after`
 
