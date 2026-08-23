@@ -32,11 +32,11 @@ func TestSortLogServicesByContainerStartOldestFirst(t *testing.T) {
 	}
 	runner := logOrderRunner{results: map[string]CommandResult{
 		"docker service ps --filter desired-state=running --format '{{.ID}}' 'app_newest'": {Stdout: "new-task\n"},
-		"docker inspect --format '{{.Status.Timestamp}}' 'new-task'":                       {Stdout: "2026-08-23T12:00:00.000000000Z\n"},
+		"docker inspect --format '{{.Status.Timestamp}}' 'new-task'":                       {Stdout: "2026-08-23 12:00:00 +0000 UTC\n"},
 		"docker service ps --filter desired-state=running --format '{{.ID}}' 'app_oldest'": {Stdout: "old-task\n"},
 		"docker inspect --format '{{.Status.Timestamp}}' 'old-task'":                       {Stdout: "2026-08-23T10:00:00Z\n"},
 		"docker service ps --filter desired-state=running --format '{{.ID}}' 'app_middle'": {Stdout: "middle-task-1\nmiddle-task-2\n"},
-		"docker inspect --format '{{.Status.Timestamp}}' 'middle-task-1' 'middle-task-2'":  {Stdout: "2026-08-23T10:30:00Z\n2026-08-23T11:00:00Z\n"},
+		"docker inspect --format '{{.Status.Timestamp}}' 'middle-task-1' 'middle-task-2'":  {Stdout: "2026-08-23 10:30:00.123456789 +0000 UTC\n2026-08-23T11:00:00Z\n"},
 	}}
 
 	if err := sortLogServicesByContainerStart(context.Background(), runner, services); err != nil {

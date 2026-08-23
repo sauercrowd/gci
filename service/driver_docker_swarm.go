@@ -907,8 +907,12 @@ func sortLogServicesByContainerStart(ctx context.Context, runner RemoteRunner, s
 				return commandError(fmt.Sprintf("failed to inspect running tasks for service %q", serviceRef), inspectErr, inspectResult)
 			}
 
-			for _, value := range strings.Fields(inspectResult.Stdout) {
-				started, parseErr := time.Parse(time.RFC3339Nano, value)
+			for _, line := range strings.Split(strings.TrimSpace(inspectResult.Stdout), "\n") {
+				value := strings.TrimSpace(line)
+				if value == "" {
+					continue
+				}
+				started, parseErr := parseDockerTimestamp(value)
 				if parseErr != nil {
 					return fmt.Errorf("failed to parse container start time %q for service %q: %w", value, serviceRef, parseErr)
 				}
@@ -928,6 +932,22 @@ func sortLogServicesByContainerStart(ctx context.Context, runner RemoteRunner, s
 		services[i] = starts[i].service
 	}
 	return nil
+}
+
+func parseDockerTimestamp(value string) (time.Time, error) {
+	// Depending on the Docker CLI/API version, a Swarm task timestamp is
+	// rendered either as RFC3339 or with time.Time.String's space-separated
+	// representation.
+	for _, layout := range []string{
+		time.RFC3339Nano,
+		"2006-01-02 15:04:05.999999999 -0700 MST",
+	} {
+		parsed, err := time.Parse(layout, value)
+		if err == nil {
+			return parsed, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("unsupported Docker timestamp format")
 }
 
 func dockerSwarmStackServiceNames(ctx context.Context, runner RemoteRunner, stackName string) ([]string, error) {
