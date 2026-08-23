@@ -2,6 +2,9 @@
 
 Fetch service logs from the remote server.
 
+For non-streaming output, services are printed by running-container start time:
+the oldest appears first and the most recently started appears last.
+
 ## Usage
 
 ```bash

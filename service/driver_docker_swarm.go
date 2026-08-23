@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -196,6 +197,9 @@ func (dockerSwarmDriver) Logs(ctx context.Context, runner RemoteRunner, cfg Conf
 	if err != nil {
 		return err
 	}
+	if err := sortLogServicesByContainerStart(ctx, runner, services); err != nil {
+		return err
+	}
 
 	if stdout == nil {
 		stdout = io.Discard
@@ -321,6 +325,7 @@ func dockerSwarmStackStable(ctx context.Context, runner RemoteRunner, stackName 
 	}
 
 	unstable := make([]string, 0)
+	serviceNames := make([]string, 0, len(lines))
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -338,6 +343,10 @@ func dockerSwarmStackStable(ctx context.Context, runner RemoteRunner, stackName 
 		desired, running, ok := parseReplicas(replicas)
 		if !ok || running != desired {
 			unstable = append(unstable, fmt.Sprintf("%s=%s", serviceName, replicas))
+			continue
+		}
+		if desired > 0 {
+			serviceNames = append(serviceNames, serviceName)
 		}
 	}
 
@@ -345,7 +354,179 @@ func dockerSwarmStackStable(ctx context.Context, runner RemoteRunner, stackName 
 		return false, strings.Join(unstable, ", "), nil
 	}
 
-	return true, "stable", nil
+	updatesPending := make([]string, 0, len(serviceNames))
+	for _, serviceName := range serviceNames {
+		complete, state, err := dockerSwarmServiceUpdateComplete(ctx, runner, serviceName)
+		if err != nil {
+			return false, "", err
+		}
+		if !complete {
+			updatesPending = append(updatesPending, state)
+		}
+	}
+	if len(updatesPending) > 0 {
+		return false, strings.Join(updatesPending, ", "), nil
+	}
+
+	taskStates := make([]string, 0, len(serviceNames))
+	for _, serviceName := range serviceNames {
+		stable, state, err := dockerSwarmServiceTasksHealthy(ctx, runner, serviceName)
+		if err != nil {
+			return false, "", err
+		}
+		if !stable {
+			taskStates = append(taskStates, state)
+		}
+	}
+
+	if len(taskStates) > 0 {
+		return false, strings.Join(taskStates, ", "), nil
+	}
+
+	return true, "stable (updates complete, running containers healthy)", nil
+}
+
+func dockerSwarmServiceUpdateComplete(ctx context.Context, runner RemoteRunner, serviceName string) (bool, string, error) {
+	command := fmt.Sprintf("docker service inspect --format '{{if .UpdateStatus}}{{.UpdateStatus.State}}|{{.UpdateStatus.Message}}{{else}}|{{end}}' %s", shellQuote(serviceName))
+	result, err := runner.Run(ctx, command)
+	if err != nil {
+		return false, "", commandError(fmt.Sprintf("failed to inspect docker service update status for %q", serviceName), err, result)
+	}
+
+	line := strings.TrimSpace(result.Stdout)
+	if line == "" || line == "|" {
+		return true, fmt.Sprintf("%s=no update in progress", serviceName), nil
+	}
+
+	parts := strings.SplitN(line, "|", 2)
+	state := strings.ToLower(strings.TrimSpace(parts[0]))
+	message := ""
+	if len(parts) > 1 {
+		message = strings.TrimSpace(parts[1])
+	}
+
+	switch state {
+	case "", "completed":
+		return true, fmt.Sprintf("%s update=%s", serviceName, state), nil
+	case "updating":
+		if message != "" {
+			return false, fmt.Sprintf("%s update=%s (%s)", serviceName, state, message), nil
+		}
+		return false, fmt.Sprintf("%s update=%s", serviceName, state), nil
+	case "paused", "rollback_started", "rollback_paused", "rollback_completed":
+		if message != "" {
+			return false, "", fmt.Errorf("service %q update failed: %s (%s)", serviceName, state, message)
+		}
+		return false, "", fmt.Errorf("service %q update failed: %s", serviceName, state)
+	default:
+		if strings.Contains(state, "rollback") {
+			if message != "" {
+				return false, "", fmt.Errorf("service %q update failed: %s (%s)", serviceName, state, message)
+			}
+			return false, "", fmt.Errorf("service %q update failed: %s", serviceName, state)
+		}
+		if message != "" {
+			return false, fmt.Sprintf("%s update=%s (%s)", serviceName, state, message), nil
+		}
+		return false, fmt.Sprintf("%s update=%s", serviceName, state), nil
+	}
+}
+
+func dockerSwarmServiceTasksHealthy(ctx context.Context, runner RemoteRunner, serviceName string) (bool, string, error) {
+	command := fmt.Sprintf("docker service ps --no-trunc --filter desired-state=running --format '{{.ID}}|{{.Name}}|{{.CurrentState}}|{{.Error}}' %s", shellQuote(serviceName))
+	result, err := runner.Run(ctx, command)
+	if err != nil {
+		return false, "", commandError(fmt.Sprintf("failed to inspect docker service tasks for %q", serviceName), err, result)
+	}
+
+	lines := strings.Split(strings.TrimSpace(result.Stdout), "\n")
+	if len(lines) == 1 && strings.TrimSpace(lines[0]) == "" {
+		return false, fmt.Sprintf("%s=no running tasks", serviceName), nil
+	}
+
+	pending := make([]string, 0)
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		parts := strings.SplitN(line, "|", 4)
+		if len(parts) != 4 {
+			pending = append(pending, fmt.Sprintf("%s=%s", serviceName, line))
+			continue
+		}
+
+		taskID := strings.TrimSpace(parts[0])
+		taskName := strings.TrimSpace(parts[1])
+		currentState := strings.ToLower(strings.TrimSpace(parts[2]))
+		errorMessage := strings.TrimSpace(parts[3])
+
+		if strings.Contains(currentState, "failed") || strings.HasPrefix(currentState, "rejected") || strings.Contains(currentState, "shutdown") || errorMessage != "" {
+			if errorMessage != "" {
+				return false, "", fmt.Errorf("service %q task %q failed: %s (%s)", serviceName, taskName, parts[2], errorMessage)
+			}
+			return false, "", fmt.Errorf("service %q task %q failed: %s", serviceName, taskName, parts[2])
+		}
+		if !strings.HasPrefix(currentState, "running") {
+			pending = append(pending, fmt.Sprintf("%s=%s", taskName, parts[2]))
+			continue
+		}
+
+		containerID, health, err := dockerSwarmTaskContainerHealth(ctx, runner, taskID)
+		if err != nil {
+			return false, "", err
+		}
+		containerLabel := shortDockerID(containerID)
+		if containerLabel == "" {
+			containerLabel = taskID
+		}
+
+		switch health {
+		case "healthy", "none":
+			continue
+		case "starting", "":
+			pending = append(pending, fmt.Sprintf("%s container=%s health=%s", taskName, containerLabel, health))
+		case "unhealthy":
+			return false, "", fmt.Errorf("service %q task %q container %s is unhealthy", serviceName, taskName, containerLabel)
+		default:
+			pending = append(pending, fmt.Sprintf("%s container=%s health=%s", taskName, containerLabel, health))
+		}
+	}
+
+	if len(pending) > 0 {
+		return false, strings.Join(pending, "; "), nil
+	}
+	return true, fmt.Sprintf("%s tasks healthy", serviceName), nil
+}
+
+func dockerSwarmTaskContainerHealth(ctx context.Context, runner RemoteRunner, taskID string) (string, string, error) {
+	containerCommand := fmt.Sprintf("docker inspect --format '{{.Status.ContainerStatus.ContainerID}}' %s", shellQuote(taskID))
+	containerResult, err := runner.Run(ctx, containerCommand)
+	if err != nil {
+		return "", "", commandError(fmt.Sprintf("failed to inspect docker task %q", taskID), err, containerResult)
+	}
+
+	containerID := strings.TrimSpace(containerResult.Stdout)
+	if containerID == "" || containerID == "<no value>" {
+		return containerID, "starting", nil
+	}
+
+	healthCommand := fmt.Sprintf("docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' %s", shellQuote(containerID))
+	healthResult, healthErr := runner.Run(ctx, healthCommand)
+	if healthErr != nil {
+		return containerID, "", commandError(fmt.Sprintf("failed to inspect docker container %q health", shortDockerID(containerID)), healthErr, healthResult)
+	}
+
+	return containerID, strings.ToLower(strings.TrimSpace(healthResult.Stdout)), nil
+}
+
+func shortDockerID(id string) string {
+	id = strings.TrimSpace(id)
+	if len(id) <= 12 {
+		return id
+	}
+	return id[:12]
 }
 
 func dockerSwarmJobStackCompleted(ctx context.Context, runner RemoteRunner, stackName string) (bool, string, error) {
@@ -416,6 +597,7 @@ func waitForDockerSwarmStack(ctx context.Context, runner RemoteRunner, stack Doc
 
 	mode := dockerSwarmStackMode(stack)
 	lastState := ""
+	printedProgress := false
 	for {
 		var stable bool
 		var state string
@@ -428,17 +610,25 @@ func waitForDockerSwarmStack(ctx context.Context, runner RemoteRunner, stack Doc
 			stable, state, err = dockerSwarmStackStable(waitCtx, runner, stack.Name)
 		}
 		if err != nil {
+			if printedProgress {
+				fmt.Fprintln(stdout)
+			}
 			return err
 		}
 		lastState = state
 		if stable {
+			if printedProgress {
+				fmt.Fprintln(stdout)
+			}
 			fmt.Fprintf(stdout, "stack %q is stable\n", stack.Name)
 			return nil
 		}
-		fmt.Fprintf(stdout, "waiting for stack %q (%s): %s\n", stack.Name, mode, state)
+		fmt.Fprint(stdout, ".")
+		printedProgress = true
 
 		select {
 		case <-waitCtx.Done():
+			fmt.Fprintln(stdout)
 			if lastState == "" {
 				lastState = "no services reported"
 			}
@@ -681,6 +871,63 @@ func selectedLogServices(ctx context.Context, runner RemoteRunner, cfg DockerSwa
 		out = append(out, DockerSwarmLogService{Stack: stack, Name: name})
 	}
 	return out, nil
+}
+
+func sortLogServicesByContainerStart(ctx context.Context, runner RemoteRunner, services []DockerSwarmLogService) error {
+	type serviceStart struct {
+		service DockerSwarmLogService
+		started time.Time
+	}
+
+	starts := make([]serviceStart, 0, len(services))
+	for _, service := range services {
+		serviceRef := fmt.Sprintf("%s_%s", service.Stack, service.Name)
+		tasksCommand := fmt.Sprintf(
+			"docker service ps --filter desired-state=running --format '{{.ID}}' %s",
+			shellQuote(serviceRef),
+		)
+		tasksResult, err := runner.Run(ctx, tasksCommand)
+		if err != nil {
+			return commandError(fmt.Sprintf("failed to list running tasks for service %q", serviceRef), err, tasksResult)
+		}
+
+		taskIDs := strings.Fields(tasksResult.Stdout)
+		latestStart := time.Time{}
+		if len(taskIDs) > 0 {
+			quotedTaskIDs := make([]string, 0, len(taskIDs))
+			for _, taskID := range taskIDs {
+				quotedTaskIDs = append(quotedTaskIDs, shellQuote(taskID))
+			}
+			inspectCommand := fmt.Sprintf(
+				"docker inspect --format '{{.Status.Timestamp}}' %s",
+				strings.Join(quotedTaskIDs, " "),
+			)
+			inspectResult, inspectErr := runner.Run(ctx, inspectCommand)
+			if inspectErr != nil {
+				return commandError(fmt.Sprintf("failed to inspect running tasks for service %q", serviceRef), inspectErr, inspectResult)
+			}
+
+			for _, value := range strings.Fields(inspectResult.Stdout) {
+				started, parseErr := time.Parse(time.RFC3339Nano, value)
+				if parseErr != nil {
+					return fmt.Errorf("failed to parse container start time %q for service %q: %w", value, serviceRef, parseErr)
+				}
+				if started.After(latestStart) {
+					latestStart = started
+				}
+			}
+		}
+
+		starts = append(starts, serviceStart{service: service, started: latestStart})
+	}
+
+	sort.SliceStable(starts, func(i, j int) bool {
+		return starts[i].started.Before(starts[j].started)
+	})
+	for i := range starts {
+		services[i] = starts[i].service
+	}
+	return nil
 }
 
 func dockerSwarmStackServiceNames(ctx context.Context, runner RemoteRunner, stackName string) ([]string, error) {
