@@ -2,8 +2,16 @@
 
 Fetch service logs from the remote server.
 
-For non-streaming output, services are printed by running-container start time:
-the oldest appears first and the most recently started appears last.
+Fetched logs are combined across selected services and sorted by Docker timestamp,
+oldest first. Each line retains its service and task identity. Application stdout
+and stderr are merged remotely and printed together on GCI's stdout.
+
+Equal timestamps retain their received order. Multiline continuations stay with
+the preceding entry; output without a timestamp before the first entry appears first.
+Deployment failure diagnostics use the same ordering.
+
+Follow mode supports one service and streams timestamped output in arrival order.
+It does not buffer or reorder live messages.
 
 ## Usage
 

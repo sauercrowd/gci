@@ -197,39 +197,23 @@ func (dockerSwarmDriver) Logs(ctx context.Context, runner RemoteRunner, cfg Conf
 	if err != nil {
 		return err
 	}
-	if err := sortLogServicesByContainerStart(ctx, runner, services); err != nil {
-		return err
-	}
-
 	if stdout == nil {
 		stdout = io.Discard
 	}
-	if stderr == nil {
-		stderr = io.Discard
-	}
 
-	for i, service := range services {
+	var entries []dockerSwarmLogEntry
+	for _, service := range services {
 		serviceRef := fmt.Sprintf("%s_%s", service.Stack, service.Name)
-		command := fmt.Sprintf("docker service logs --tail %d %s", lines, shellQuote(serviceRef))
-
-		if i > 0 {
-			fmt.Fprintln(stdout)
-		}
-
-		header := fmt.Sprintf("===== %s.%s =====\n", service.Stack, service.Name)
-		fmt.Fprint(stdout, header)
-
-		errWriter := &logHeaderOnceWriter{
-			header: header,
-			w:      stderr,
-		}
-
-		if err := runner.Stream(ctx, command, stdout, errWriter); err != nil {
-			return fmt.Errorf("failed to fetch docker swarm logs for service %q in stack %q: %w", service.Name, service.Stack, err)
+		logs, fetchErr := fetchDockerSwarmServiceLogs(ctx, runner, serviceRef, lines)
+		entries = append(entries, logs...)
+		if fetchErr != nil {
+			if err := writeDockerSwarmLogs(stdout, entries); err != nil {
+				return err
+			}
+			return fetchErr
 		}
 	}
-
-	return nil
+	return writeDockerSwarmLogs(stdout, entries)
 }
 
 func (dockerSwarmDriver) LogsStream(ctx context.Context, runner RemoteRunner, cfg Config, lines int, stdout, stderr io.Writer) error {
@@ -243,7 +227,7 @@ func (dockerSwarmDriver) LogsStream(ctx context.Context, runner RemoteRunner, cf
 	}
 
 	serviceRef := fmt.Sprintf("%s_%s", services[0].Stack, services[0].Name)
-	command := fmt.Sprintf("docker service logs --tail %d --follow %s", lines, shellQuote(serviceRef))
+	command := fmt.Sprintf("docker service logs --timestamps --tail %d --follow %s 2>&1", lines, shellQuote(serviceRef))
 	if err := runner.Stream(ctx, command, stdout, stderr); err != nil {
 		return fmt.Errorf("failed to stream docker swarm logs: %w", err)
 	}
@@ -592,7 +576,7 @@ func waitForDockerSwarmStack(ctx context.Context, runner RemoteRunner, stack Doc
 	waitCtx, cancel := context.WithTimeout(ctx, waitTimeout)
 	defer cancel()
 
-	ticker := time.NewTicker(2 * time.Second)
+	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
 	mode := dockerSwarmStackMode(stack)
@@ -664,23 +648,20 @@ func dumpDockerSwarmStackLogs(ctx context.Context, runner RemoteRunner, stackNam
 		return
 	}
 
+	var entries []dockerSwarmLogEntry
 	for _, serviceName := range services {
 		serviceName = strings.TrimSpace(serviceName)
 		if serviceName == "" {
 			continue
 		}
-		fmt.Fprintf(out, "===== %s =====\n", serviceName)
-		logCommand := fmt.Sprintf("docker service logs --tail %d %s", lines, shellQuote(serviceName))
-		logResult, logErr := runner.Run(ctx, logCommand)
+		logs, logErr := fetchDockerSwarmServiceLogs(ctx, runner, serviceName, lines)
+		entries = append(entries, logs...)
 		if logErr != nil {
-			fmt.Fprintf(out, "failed to fetch logs for %q: %v\n", serviceName, logErr)
+			fmt.Fprintln(out, logErr)
 		}
-		if strings.TrimSpace(logResult.Stdout) != "" {
-			fmt.Fprintln(out, strings.TrimSpace(logResult.Stdout))
-		}
-		if strings.TrimSpace(logResult.Stderr) != "" {
-			fmt.Fprintln(out, strings.TrimSpace(logResult.Stderr))
-		}
+	}
+	if err := writeDockerSwarmLogs(out, entries); err != nil {
+		fmt.Fprintf(out, "failed to write stack logs: %v\n", err)
 	}
 }
 
@@ -813,26 +794,64 @@ func commandError(prefix string, err error, result CommandResult) error {
 	return fmt.Errorf("%s: %w\nstdout:\n%s", prefix, err, stdout)
 }
 
-type logHeaderOnceWriter struct {
-	header string
-	w      io.Writer
-	wrote  bool
+// Docker prefixes each timestamped message with its task identity. Retain that
+// prefix so entries from replicas and previous tasks remain distinguishable.
+type dockerSwarmLogEntry struct {
+	timestamp time.Time
+	text      string
 }
 
-func (l *logHeaderOnceWriter) Write(p []byte) (int, error) {
-	if len(p) == 0 {
-		return 0, nil
+func fetchDockerSwarmServiceLogs(ctx context.Context, runner RemoteRunner, serviceRef string, lines int) ([]dockerSwarmLogEntry, error) {
+	// Merge at the source: SSH copies stdout and stderr independently, which
+	// otherwise loses their ordering (and can split service headers).
+	command := fmt.Sprintf("docker service logs --timestamps --tail %d %s 2>&1", lines, shellQuote(serviceRef))
+	result, err := runner.Run(ctx, command)
+	entries := parseDockerSwarmLogs(serviceRef, result.Stdout)
+	if err != nil {
+		return entries, commandError(fmt.Sprintf("failed to fetch docker swarm logs for service %q", serviceRef), err, result)
 	}
-	if l.w == nil {
-		l.w = io.Discard
+	return entries, nil
+}
+
+func parseDockerSwarmLogs(serviceRef, output string) []dockerSwarmLogEntry {
+	if output == "" {
+		return nil
 	}
-	if !l.wrote {
-		if _, err := fmt.Fprint(l.w, l.header); err != nil {
-			return 0, err
+	var entries []dockerSwarmLogEntry
+	for _, line := range strings.Split(strings.TrimSuffix(output, "\n"), "\n") {
+		stamp, _, _ := strings.Cut(strings.TrimSpace(line), " ")
+		timestamp, err := time.Parse(time.RFC3339Nano, stamp)
+		if err != nil {
+			if _, message, ok := strings.Cut(line, " | "); ok {
+				stamp, _, _ = strings.Cut(strings.TrimSpace(message), " ")
+				timestamp, err = time.Parse(time.RFC3339Nano, stamp)
+			}
 		}
-		l.wrote = true
+		if err != nil && len(entries) > 0 {
+			// Keep multiline messages together, and preserve unrecognised output.
+			entries[len(entries)-1].text += "\n[" + serviceRef + "] " + line
+			continue
+		}
+		entries = append(entries, dockerSwarmLogEntry{
+			timestamp: timestamp,
+			text:      "[" + serviceRef + "] " + line,
+		})
 	}
-	return l.w.Write(p)
+	return entries
+}
+
+func writeDockerSwarmLogs(out io.Writer, entries []dockerSwarmLogEntry) error {
+	// Stable sorting preserves arrival order when Docker timestamps are equal.
+	// Output without a timestamp sorts first rather than being dropped.
+	sort.SliceStable(entries, func(i, j int) bool {
+		return entries[i].timestamp.Before(entries[j].timestamp)
+	})
+	for _, entry := range entries {
+		if _, err := fmt.Fprintln(out, entry.text); err != nil {
+			return fmt.Errorf("failed to write docker swarm logs: %w", err)
+		}
+	}
+	return nil
 }
 
 func selectedLogServices(ctx context.Context, runner RemoteRunner, cfg DockerSwarmConfig) ([]DockerSwarmLogService, error) {
@@ -871,83 +890,6 @@ func selectedLogServices(ctx context.Context, runner RemoteRunner, cfg DockerSwa
 		out = append(out, DockerSwarmLogService{Stack: stack, Name: name})
 	}
 	return out, nil
-}
-
-func sortLogServicesByContainerStart(ctx context.Context, runner RemoteRunner, services []DockerSwarmLogService) error {
-	type serviceStart struct {
-		service DockerSwarmLogService
-		started time.Time
-	}
-
-	starts := make([]serviceStart, 0, len(services))
-	for _, service := range services {
-		serviceRef := fmt.Sprintf("%s_%s", service.Stack, service.Name)
-		tasksCommand := fmt.Sprintf(
-			"docker service ps --filter desired-state=running --format '{{.ID}}' %s",
-			shellQuote(serviceRef),
-		)
-		tasksResult, err := runner.Run(ctx, tasksCommand)
-		if err != nil {
-			return commandError(fmt.Sprintf("failed to list running tasks for service %q", serviceRef), err, tasksResult)
-		}
-
-		taskIDs := strings.Fields(tasksResult.Stdout)
-		latestStart := time.Time{}
-		if len(taskIDs) > 0 {
-			quotedTaskIDs := make([]string, 0, len(taskIDs))
-			for _, taskID := range taskIDs {
-				quotedTaskIDs = append(quotedTaskIDs, shellQuote(taskID))
-			}
-			inspectCommand := fmt.Sprintf(
-				"docker inspect --format '{{.Status.Timestamp}}' %s",
-				strings.Join(quotedTaskIDs, " "),
-			)
-			inspectResult, inspectErr := runner.Run(ctx, inspectCommand)
-			if inspectErr != nil {
-				return commandError(fmt.Sprintf("failed to inspect running tasks for service %q", serviceRef), inspectErr, inspectResult)
-			}
-
-			for _, line := range strings.Split(strings.TrimSpace(inspectResult.Stdout), "\n") {
-				value := strings.TrimSpace(line)
-				if value == "" {
-					continue
-				}
-				started, parseErr := parseDockerTimestamp(value)
-				if parseErr != nil {
-					return fmt.Errorf("failed to parse container start time %q for service %q: %w", value, serviceRef, parseErr)
-				}
-				if started.After(latestStart) {
-					latestStart = started
-				}
-			}
-		}
-
-		starts = append(starts, serviceStart{service: service, started: latestStart})
-	}
-
-	sort.SliceStable(starts, func(i, j int) bool {
-		return starts[i].started.Before(starts[j].started)
-	})
-	for i := range starts {
-		services[i] = starts[i].service
-	}
-	return nil
-}
-
-func parseDockerTimestamp(value string) (time.Time, error) {
-	// Depending on the Docker CLI/API version, a Swarm task timestamp is
-	// rendered either as RFC3339 or with time.Time.String's space-separated
-	// representation.
-	for _, layout := range []string{
-		time.RFC3339Nano,
-		"2006-01-02 15:04:05.999999999 -0700 MST",
-	} {
-		parsed, err := time.Parse(layout, value)
-		if err == nil {
-			return parsed, nil
-		}
-	}
-	return time.Time{}, fmt.Errorf("unsupported Docker timestamp format")
 }
 
 func dockerSwarmStackServiceNames(ctx context.Context, runner RemoteRunner, stackName string) ([]string, error) {
