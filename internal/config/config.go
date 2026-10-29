@@ -124,6 +124,9 @@ func (c *Config) Validate() error {
 		if len(svc.Routes) > 0 && svc.Port == 0 {
 			return fmt.Errorf("service %q: routes require port", name)
 		}
+		if svc.Health != "" && svc.Port == 0 {
+			return fmt.Errorf("service %q: health requires port", name)
+		}
 		if svc.Health != "" && !strings.HasPrefix(svc.Health, "/") {
 			return fmt.Errorf("service %q: health must be an HTTP path starting with /", name)
 		}

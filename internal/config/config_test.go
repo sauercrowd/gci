@@ -63,6 +63,7 @@ func TestValidate(t *testing.T) {
 		"cycle":                 `app = "a"` + "\n[services.a]\ncommand = \"x\"\ndepends_on = [\"b\"]\n[services.b]\ncommand = \"x\"\ndepends_on = [\"a\"]",
 		"routes require port":   `app = "a"` + "\n[services.a]\ncommand = \"x\"\nroutes = [{}]",
 		"used by both":          `app = "a"` + "\n[services.a]\ncommand = \"x\"\nvolumes = { v = \"/v\" }\n[services.b]\ncommand = \"x\"\nvolumes = { v = \"/w\" }",
+		"health requires port":  `app = "a"` + "\n[services.a]\ncommand = \"x\"\nhealth = \"/h\"",
 		"missing in the target": `app = "a"` + "\n[services.a]\ncommand = \"x\"\nimage = \"nginx\"",
 	}
 	for want, content := range cases {
