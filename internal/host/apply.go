@@ -86,6 +86,10 @@ func ReceiveSource(app, svc, hash string, r io.Reader) error {
 			}
 			f.Close()
 		case tar.TypeSymlink:
+			resolved := filepath.Join(filepath.Dir(target), hdr.Linkname)
+			if filepath.IsAbs(hdr.Linkname) || (resolved != tmp && !strings.HasPrefix(resolved, tmp+string(filepath.Separator))) {
+				return fmt.Errorf("source: symlink %s escapes the source tree", hdr.Name)
+			}
 			if err := os.Symlink(hdr.Linkname, target); err != nil {
 				return err
 			}
