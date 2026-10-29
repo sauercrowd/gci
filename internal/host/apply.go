@@ -212,7 +212,8 @@ func applyService(ctx context.Context, w io.Writer, cfg *config.Config, name, so
 	rev := revision(cfg, name, env, sourceHash)
 	cur := st.Services[name]
 	if cur != nil && cur.Rev == rev {
-		if inst, _ := getInstance(ctx, cur.Container); inst != nil && inst.Status == "Running" {
+		inst, _ := getInstance(ctx, cur.Container)
+		if inst != nil && inst.Status == "Running" && unitActiveProbe(ctx, cur.Container, unitName(name))() == nil {
 			if !routesEqual(cur.Routes, svc.Routes) {
 				cur.Routes = svc.Routes
 				logf("routes updated")
