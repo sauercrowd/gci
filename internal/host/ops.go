@@ -78,7 +78,9 @@ func Remove(ctx context.Context, w io.Writer, app string, volumes bool) error {
 	for _, inst := range list {
 		if inst.Config["user.gci.app"] == app {
 			fmt.Fprintf(w, "deleting %s\n", inst.Name)
-			_ = deleteInstance(ctx, inst.Name)
+			if err := deleteInstance(ctx, inst.Name); err != nil {
+				return fmt.Errorf("delete %s: %w", inst.Name, err)
+			}
 		}
 	}
 	if volumes {
