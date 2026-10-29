@@ -52,7 +52,7 @@ func renderEnvFile(env map[string]string) string {
 // so the service process receives signals directly.
 func shellScript(command string) string {
 	command = strings.TrimSpace(command)
-	if !strings.Contains(command, "\n") {
+	if !strings.ContainsAny(command, "\n;&|") {
 		command = "exec " + command
 	}
 	return "#!/bin/sh\nset -e\n" + command + "\n"

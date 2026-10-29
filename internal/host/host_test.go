@@ -63,4 +63,7 @@ func TestEnvFileQuoting(t *testing.T) {
 	if shellScript("run me") != "#!/bin/sh\nset -e\nexec run me\n" {
 		t.Errorf("single-line command should exec")
 	}
+	if s := shellScript("cd /app && run"); strings.Contains(s, "exec") {
+		t.Errorf("compound command must not be exec'd: %q", s)
+	}
 }
