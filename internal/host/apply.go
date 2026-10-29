@@ -58,6 +58,7 @@ func ReceiveSource(app, svc, hash string, r io.Reader) error {
 		return err
 	}
 	tr := tar.NewReader(gz)
+	var links [][2]string
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -90,9 +91,13 @@ func ReceiveSource(app, svc, hash string, r io.Reader) error {
 			if filepath.IsAbs(hdr.Linkname) || (resolved != tmp && !strings.HasPrefix(resolved, tmp+string(filepath.Separator))) {
 				return fmt.Errorf("source: symlink %s escapes the source tree", hdr.Name)
 			}
-			if err := os.Symlink(hdr.Linkname, target); err != nil {
-				return err
-			}
+			links = append(links, [2]string{hdr.Linkname, target})
+		}
+	}
+	// Create links last so no file or directory is ever written through one.
+	for _, l := range links {
+		if err := os.Symlink(l[0], l[1]); err != nil {
+			return err
 		}
 	}
 	return os.Rename(tmp, dst)
