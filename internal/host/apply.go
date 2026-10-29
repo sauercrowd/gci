@@ -337,7 +337,11 @@ func applyService(ctx context.Context, w io.Writer, cfg *config.Config, name, so
 	})
 	files["/etc/hosts"] = hostsFile(st, map[string]string{name: ip}, app)
 	for _, p := range sortedKeys(files) {
-		if err := pushFile(ctx, container, p, files[p], "0644"); err != nil {
+		mode := "0644"
+		if p == "/etc/gci/service.env" {
+			mode = "0600"
+		}
+		if err := pushFile(ctx, container, p, files[p], mode); err != nil {
 			return fail(err)
 		}
 	}
