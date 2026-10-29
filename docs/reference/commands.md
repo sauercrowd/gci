@@ -1,65 +1,15 @@
 # Commands
 
-## Core
+Global flags: `-c/--config` (default `gci.toml`) and `-s/--server` (default: `server` from `gci.toml`, or the only registered server).
 
-### `gci init`
+| Command | Description |
+| --- | --- |
+| `gci server add <name> --host h[:port] [-u user] [-i key]` | Register an SSH host in `~/.gci/servers.toml`. Use `--local` to target this machine directly. |
+| `gci server ls` / `gci server rm <name>` | List or remove registered hosts. |
+| `gci bootstrap [--http-port 80] [--subnet 10.77.0.1/24]` | Prepare a host once (see [Installation](/installation/)). |
+| `gci deploy` | Upload changed sources, build Nix envs, and roll changed services. |
+| `gci status` | Show each service's container state, unit state, IP, port, and revision. |
+| `gci logs <service> [-n 100] [-f]` | Show a service's journal. |
+| `gci rm [--volumes]` | Remove all of the app's containers and routes. Volumes are kept unless `--volumes` is passed. |
 
-Initialize a new app configuration in the current directory.
-
-### `gci deploy`
-
-Run build hooks, sync stack files, and deploy to the configured server.
-
-### `gci status`
-
-Show app container/service status.
-
-### `gci logs`
-
-Show service logs.
-
-## Server Management
-
-### `gci server add`
-
-Register a server alias with SSH details.
-
-### `gci server ls`
-
-List configured servers.
-
-### `gci server rm`
-
-Remove a configured server.
-
-## Templating
-
-### `gci template render`
-
-Render templates with git and app context.
-
-Examples:
-
-```bash
-gci template render deploy.yaml.tmpl
-gci template render deploy.yaml.tmpl deploy.yaml
-gci template render -i deploy.yaml.tmpl
-```
-
-Template values:
-
-```text
-{{ .GitSHA }}
-{{ .GitShortSHA }}
-{{ .AppNetwork }}
-{{ .ServiceName }}
-{{ git_sha }}
-{{ git_short_sha }}
-{{ app_network }}
-```
-
-## LLM Docs
-
-### `gci agents.md`
-
-Print project and configuration guidance intended for coding agents and LLM workflows.
+The first time a command runs against a host, gci uploads itself to `/usr/local/bin/gci` (verified by SHA-256) and runs host-side work through hidden `gci agent ...` subcommands with `sudo -n`.

@@ -1,104 +1,54 @@
-# GCI
+# gci
 
-A CLI for Fly.io style deployments for any VM, Raspberry Pi, or SSH server.
-Powered by docker swarm.
+Deploy services to any Linux host over SSH. No image builds and no registry.
 
-Full documentation: https://gci.jonas.foo
+- **Nix** pins and provides every runtime and package. A deploy only realises store paths the host is missing.
+- **Incus** system containers run each service with its own IP, cgroup limits, and persistent volumes. The host `/nix/store` is mounted read-only into every container.
+- **Envoy** runs once per host as the front door and routes traffic to services.
 
-## What You Get
-- SSH-based deployments, powered by Docker Swarm (no additional software on the server)
-- Local and remote build
-- Deploy status monitoring
-- Configurable deployment with gci.toml
-
-## Install
-
-Install with Go:
-
-```bash
-go install github.com/sauercrowd/gci@latest
-```
-
-Or use the release install script:
-
-macOS/Linux
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/sauercrowd/gci/main/scripts/install.sh | sh
-```
-
-For manual binary downloads and platform-specific details, see <https://gci.jonas.foo/installation/client-side>.
+Today gci targets a single host. Cross-host networking (WireGuard between per-host Envoys) is planned.
 
 ## Quickstart
 
-1. Register a server - a single server can be used for as many apps as you like. it just acts as an alias.
-
 ```bash
-gci server add prod \
-  --host your-server.example.com \
-  --private-key ~/.ssh/id_rsa
+go install github.com/sauercrowd/gci@latest
+
+gci server add prod --host prod.example.com -u ubuntu -i ~/.ssh/id_ed25519
+gci bootstrap            # once per host: Incus, Nix, gci0 bridge, base image, Envoy on :80
+cd examples/platform
+gci deploy               # Postgres + ClickHouse + Python app behind Envoy
+gci status
+gci logs web -f
 ```
 
-2. Initialize a GCI app (can include/manage many different containers). This creates `gci.toml` in the current directory.
-
-```bash
-gci init my_platform
-```
-
-Minimal config example:
+`gci.toml`:
 
 ```toml
-name = "my_platform"
-server = "prod"
+app = "platform"
 
-build_local = """
-docker build -t 127.0.0.1:41114/my_service .
-docker push 127.0.0.1:41114/my_service
-"""
+[services.postgres]
+packages = ["postgresql_16"]
+volumes  = { pgdata = "/var/lib/postgresql" }
+command  = "postgres -D /var/lib/postgresql/16 -c listen_addresses=*"
+port     = 5432
 
-# local TCP forwards active during local build (SSH -L style)
-build_forwards = [
-  "127.0.0.1:41114:127.0.0.1:41114",
-]
-
-[driver_docker_swarm]
-force_restart_services = true
-
-# define a stack
-[[driver_docker_swarm.stacks]]
-name = "app"
-compose_file = "docker-compose.prod.yaml"
+[services.web]
+packages   = ["python3.withPackages (p: [ p.psycopg ])"]
+source     = "./app"            # shipped to the host, mounted read-only at /app
+command    = "python3 server.py"
+port       = 8080
+health     = "/healthz"
+depends_on = ["postgres"]
+routes     = [{ prefix = "/" }]
+env        = { DATABASE_URL = "postgresql://postgres@postgres:5432/postgres" }
 ```
 
-3. Deploy
+See [`examples/platform`](examples/platform) for the full example, and [docs](docs/) for the configuration and command reference.
 
-```bash
-gci deploy
-```
+## How a deploy works
 
-Deploy does:
-1. Execute your build step (+ proxy the ports specified)
-2. sync your docker compose file
-3. (re)deploy your services, monitoring for their success
-
-### Other commands
-
-Show the status of all containers of your app:
-
-```bash
-gci status
-```
-
-Logs:
-
-```bash
-gci logs
-```
-
-LLM-oriented project and config reference:
-
-```bash
-gci agents.md
-```
-
-Full documentation: https://gci.jonas.foo
+1. The client packs each `source` directory into a deterministic tarball and uploads it only if its hash is new on the host.
+2. The host agent (the same `gci` binary, installed to `/usr/local/bin/gci`) builds a Nix `buildEnv` per service from `packages`.
+3. Each service gets a revision hash of its definition, Nix env, and source. Unchanged services are left alone.
+4. For a changed **stateless** service, gci starts a new container, waits for it to be healthy, switches Envoy and `/etc/hosts`, then deletes the old container, so there's no downtime.
+5. For a changed **stateful** service (one with `volumes`), gci stops the old container, starts the new one on the same volume, and restarts the old one if the new one fails its health check.
