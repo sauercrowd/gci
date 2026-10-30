@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,6 +19,7 @@ const envoyListenPort = 10080
 
 type BootstrapOptions struct {
 	Subnet   string // gateway CIDR for the gci bridge, e.g. 10.77.0.1/24
+	VIPRange string // service VIPs, routed to Envoy, e.g. 10.77.1.0/24
 	HTTPPort int
 	Nixpkgs  string
 }
@@ -31,6 +33,17 @@ func Bootstrap(ctx context.Context, w io.Writer, opts BootstrapOptions) error {
 	if opts.Subnet == "" {
 		opts.Subnet = "10.77.0.1/24"
 	}
+	if opts.VIPRange == "" {
+		opts.VIPRange = "10.77.1.0/24"
+	}
+	gw, err := netip.ParsePrefix(opts.Subnet)
+	if err != nil {
+		return fmt.Errorf("subnet: %w", err)
+	}
+	if _, err := netip.ParsePrefix(opts.VIPRange); err != nil {
+		return fmt.Errorf("vip range: %w", err)
+	}
+	hc := &HostConfig{EnvoyIP: gw.Addr().Next().String(), VIPRange: opts.VIPRange}
 	if opts.HTTPPort == 0 {
 		opts.HTTPPort = 80
 	}
@@ -42,6 +55,9 @@ func Bootstrap(ctx context.Context, w io.Writer, opts BootstrapOptions) error {
 		return err
 	}
 	defer unlock()
+	if err := hc.save(); err != nil {
+		return err
+	}
 
 	steps := []struct {
 		name string
@@ -49,11 +65,11 @@ func Bootstrap(ctx context.Context, w io.Writer, opts BootstrapOptions) error {
 	}{
 		{"incus", func() error { return ensureIncus(ctx, w) }},
 		{"nix", func() error { return ensureNix(ctx, w) }},
-		{"network " + networkName, func() error { return ensureNetwork(ctx, opts.Subnet) }},
+		{"network " + networkName, func() error { return ensureNetwork(ctx, opts.Subnet, hc) }},
 		{"firewall", func() error { return ensureFirewallUnit(ctx) }},
 		{"profile " + profileName, func() error { return ensureProfile(ctx) }},
 		{"image " + baseImage, func() error { return ensureBaseImage(ctx, w) }},
-		{"envoy", func() error { return ensureEnvoy(ctx, opts) }},
+		{"envoy", func() error { return ensureEnvoy(ctx, opts, hc) }},
 	}
 	for _, s := range steps {
 		fmt.Fprintf(w, "==> %s\n", s.name)
@@ -114,12 +130,15 @@ func ensureNix(ctx context.Context, w io.Writer) error {
 		"curl -fsSL https://install.determinate.systems/nix | sh -s -- install --no-confirm")
 }
 
-func ensureNetwork(ctx context.Context, subnet string) error {
-	if exists(ctx, "network", "show", networkName) {
-		return nil
+// ensureNetwork creates the gci bridge; its dnsmasq forwards *.internal to Envoy.
+func ensureNetwork(ctx context.Context, subnet string, hc *HostConfig) error {
+	if !exists(ctx, "network", "show", networkName) {
+		if _, err := incus(ctx, "network", "create", networkName,
+			"ipv4.address="+subnet, "ipv4.nat=true", "ipv6.address=none", "dns.domain=gci"); err != nil {
+			return err
+		}
 	}
-	_, err := incus(ctx, "network", "create", networkName,
-		"ipv4.address="+subnet, "ipv4.nat=true", "ipv6.address=none", "dns.domain=gci")
+	_, err := incus(ctx, "network", "set", networkName, "raw.dnsmasq", "server=/internal/"+hc.EnvoyIP)
 	return err
 }
 
@@ -225,7 +244,7 @@ mkdir -p /etc/gci /app`
 	return err
 }
 
-func ensureEnvoy(ctx context.Context, opts BootstrapOptions) error {
+func ensureEnvoy(ctx context.Context, opts BootstrapOptions, hc *HostConfig) error {
 	env, err := buildEnv(ctx, opts.Nixpkgs, "gci-envoy", []string{"envoy-bin"}, filepath.Join(envoyDir(), "env"))
 	if err != nil {
 		return err
@@ -250,6 +269,13 @@ func ensureEnvoy(ctx context.Context, opts BootstrapOptions) error {
 			return err
 		}
 	}
+	// Fixed address (the DNS server for *.internal) and the VIP range routed to it.
+	nic := []string{"ipv4.address=" + hc.EnvoyIP, "ipv4.routes=" + hc.VIPRange}
+	if _, err := incus(ctx, append([]string{"config", "device", "override", envoyName, "eth0"}, nic...)...); err != nil {
+		if _, err := incus(ctx, append([]string{"config", "device", "set", envoyName, "eth0"}, nic...)...); err != nil {
+			return err
+		}
+	}
 	_, _ = incus(ctx, "config", "device", "remove", envoyName, "http")
 	if _, err := incus(ctx, "config", "device", "add", envoyName, "http", "proxy",
 		fmt.Sprintf("listen=tcp:0.0.0.0:%d", opts.HTTPPort),
@@ -260,13 +286,21 @@ func ensureEnvoy(ctx context.Context, opts BootstrapOptions) error {
 		if _, err := incus(ctx, "start", envoyName); err != nil {
 			return err
 		}
+	} else if inst.IPv4() != hc.EnvoyIP {
+		if _, err := incus(ctx, "restart", envoyName); err != nil {
+			return err
+		}
 	}
 	waitSystemd(ctx, envoyName)
 	unit := renderUnit(unitSpec{
 		Description: "gci front door (envoy)",
 		User:        "gci",
 		EnvFile:     "/etc/gci/envoy.env",
-		ExecStart:   fmt.Sprintf("%s/bin/envoy -c %s/bootstrap.yaml --log-level warn", env, envoyConfigMount),
+		ExecPre: []string{
+			"+/usr/sbin/ip route replace local " + hc.VIPRange + " dev lo",
+			"+/usr/sbin/sysctl -qw net.ipv4.ip_unprivileged_port_start=0",
+		},
+		ExecStart: fmt.Sprintf("%s/bin/envoy -c %s/bootstrap.yaml --log-level warn", env, envoyConfigMount),
 	})
 	if err := pushFile(ctx, envoyName, "/etc/gci/envoy.env", "PATH="+env+"/bin:/usr/bin:/bin\n", "0644"); err != nil {
 		return err

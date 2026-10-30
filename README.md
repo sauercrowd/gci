@@ -40,7 +40,7 @@ port       = 8080
 health     = "/healthz"
 depends_on = ["postgres"]
 routes     = [{ prefix = "/" }]
-env        = { DATABASE_URL = "postgresql://postgres@postgres:5432/postgres" }
+env        = { DATABASE_URL = "postgresql://postgres@postgres.platform.internal:5432/postgres" }
 ```
 
 See [`examples/platform`](examples/platform) for the full example, and [docs](docs/) for the configuration and command reference.
@@ -50,5 +50,5 @@ See [`examples/platform`](examples/platform) for the full example, and [docs](do
 1. The client packs each `source` directory into a deterministic tarball and uploads it only if its hash is new on the host.
 2. The host agent (the same `gci` binary, installed to `/usr/local/bin/gci`) builds a Nix `buildEnv` per service from `packages`.
 3. Each service gets a revision hash of its definition, Nix env, and source. Unchanged services are left alone.
-4. For a changed **stateless** service, gci starts a new container, waits for it to be healthy, switches Envoy and `/etc/hosts`, then deletes the old container, so there's no downtime.
+4. For a changed **stateless** service, gci starts a new container, waits for it to be healthy, switches Envoy, then deletes the old container, so there's no downtime.
 5. For a changed **stateful** service (one with `volumes`), gci stops the old container, starts the new one on the same volume, and restarts the old one if the new one fails its health check.

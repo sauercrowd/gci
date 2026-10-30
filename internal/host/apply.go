@@ -118,7 +118,7 @@ func preflight(ctx context.Context) error {
 
 // Apply converges the host to the plan: unchanged services are left alone,
 // changed ones get a new container that must pass its health check before
-// traffic (Envoy + /etc/hosts) moves to it.
+// traffic (Envoy) moves to it.
 func Apply(ctx context.Context, w io.Writer, plan Plan) error {
 	if err := preflight(ctx); err != nil {
 		return err
@@ -143,6 +143,9 @@ func Apply(ctx context.Context, w io.Writer, plan Plan) error {
 	}
 	start := time.Now()
 	var changed []string
+	if err := writeEnvoyConfig(envoyListenPort); err != nil {
+		return err
+	}
 	for _, name := range order {
 		did, err := applyService(ctx, w, cfg, name, plan.Sources[name], st)
 		if err != nil {
@@ -150,6 +153,10 @@ func Apply(ctx context.Context, w io.Writer, plan Plan) error {
 		}
 		if did {
 			changed = append(changed, name)
+			// Dependents resolve this service via its VIP, so publish it now.
+			if err := writeEnvoyConfig(envoyListenPort); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -164,9 +171,6 @@ func Apply(ctx context.Context, w io.Writer, plan Plan) error {
 		_ = os.Remove(profileLink(cfg.App, name, ".prev"))
 	}
 	if err := st.save(); err != nil {
-		return err
-	}
-	if err := refreshHosts(ctx, st); err != nil {
 		return err
 	}
 	if err := writeEnvoyConfig(envoyListenPort); err != nil {
@@ -219,9 +223,13 @@ func applyService(ctx context.Context, w io.Writer, cfg *config.Config, name, so
 	if cur != nil && cur.Rev == rev {
 		inst, _ := getInstance(ctx, cur.Container)
 		if inst != nil && inst.Status == "Running" && unitActiveProbe(ctx, cur.Container, unitName(name))() == nil {
-			if !routesEqual(cur.Routes, svc.Routes) {
-				cur.Routes = svc.Routes
-				logf("routes updated")
+			vip, err := serviceVIP(cur, svc, st)
+			if err != nil {
+				return false, err
+			}
+			if !routesEqual(cur.Routes, svc.Routes) || cur.VIP != vip || cur.HTTP != (svc.Health != "") {
+				cur.Routes, cur.VIP, cur.HTTP = svc.Routes, vip, svc.Health != ""
+				logf("routing updated")
 				return true, st.save()
 			}
 			logf("unchanged (%s)", cur.Container)
@@ -341,7 +349,7 @@ func applyService(ctx context.Context, w io.Writer, cfg *config.Config, name, so
 		ExecPre:     pre,
 		ExecStart:   "/bin/sh /etc/gci/run.sh",
 	})
-	files["/etc/hosts"] = hostsFile(st, map[string]string{name: ip}, app)
+	files["/etc/systemd/resolved.conf.d/gci.conf"] = "[Resolve]\nDomains=" + app + ".internal\n"
 	for _, p := range sortedKeys(files) {
 		mode := "0644"
 		if p == "/etc/gci/service.env" {
@@ -352,7 +360,7 @@ func applyService(ctx context.Context, w io.Writer, cfg *config.Config, name, so
 		}
 	}
 	if _, err := incus(ctx, "exec", container, "--", "sh", "-c",
-		"systemctl daemon-reload && systemctl enable --now "+unitName(name)); err != nil {
+		"systemctl restart systemd-resolved && systemctl daemon-reload && systemctl enable --now "+unitName(name)); err != nil {
 		return fail(err)
 	}
 
@@ -377,14 +385,15 @@ func applyService(ctx context.Context, w io.Writer, cfg *config.Config, name, so
 	if err := addRoot(ctx, env, profileLink(app, name, "")); err != nil {
 		return false, err
 	}
+	vip, err := serviceVIP(cur, svc, st)
+	if err != nil {
+		return false, err
+	}
 	st.Services[name] = &ServiceState{
-		Container: container, IP: ip, Rev: rev, Env: env,
+		Container: container, IP: ip, VIP: vip, HTTP: svc.Health != "", Rev: rev, Env: env,
 		Port: svc.Port, Routes: svc.Routes, Volumes: svc.Volumes,
 	}
 	if err := st.save(); err != nil {
-		return false, err
-	}
-	if err := refreshHosts(ctx, st); err != nil {
 		return false, err
 	}
 	if err := writeEnvoyConfig(envoyListenPort); err != nil {
@@ -408,36 +417,6 @@ func addRoot(ctx context.Context, storePath, link string) error {
 	}
 	_, err = run(ctx, nix, "--extra-experimental-features", "nix-command", "build", "--out-link", link, storePath)
 	return err
-}
-
-func hostsFile(st *AppState, override map[string]string, app string) string {
-	var b strings.Builder
-	b.WriteString("127.0.0.1 localhost\n::1 localhost ip6-localhost\n")
-	ips := map[string]string{}
-	for name, s := range st.Services {
-		ips[name] = s.IP
-	}
-	for k, v := range override {
-		ips[k] = v
-	}
-	for _, name := range sortedKeys(ips) {
-		if ips[name] != "" {
-			fmt.Fprintf(&b, "%s %s %s.%s.gci\n", ips[name], name, name, app)
-		}
-	}
-	return b.String()
-}
-
-// refreshHosts rewrites /etc/hosts in every container of the app so services
-// resolve each other by name (e.g. "postgres").
-func refreshHosts(ctx context.Context, st *AppState) error {
-	content := hostsFile(st, nil, st.App)
-	for _, name := range sortedKeys(st.Services) {
-		if err := pushFile(ctx, st.Services[name].Container, "/etc/hosts", content, "0644"); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func deleteOrphans(ctx context.Context, st *AppState) error {
@@ -476,4 +455,20 @@ func sortedKeys[V any](m map[string]V) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// serviceVIP keeps a service's existing VIP or allocates one; services
+// without a port get none.
+func serviceVIP(cur *ServiceState, svc *config.Service, st *AppState) (string, error) {
+	if svc.Port == 0 {
+		return "", nil
+	}
+	if cur != nil && cur.VIP != "" {
+		return cur.VIP, nil
+	}
+	hc, err := loadHostConfig()
+	if err != nil {
+		return "", err
+	}
+	return allocateVIP(hc, st)
 }

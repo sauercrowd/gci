@@ -22,6 +22,7 @@ func init() {
 	}
 	bootstrap.Flags().StringVar(&opts.Subnet, "subnet", "", "")
 	bootstrap.Flags().IntVar(&opts.HTTPPort, "http-port", 0, "")
+	bootstrap.Flags().StringVar(&opts.VIPRange, "vip-range", "", "")
 
 	apply := &cobra.Command{
 		Use: "apply",

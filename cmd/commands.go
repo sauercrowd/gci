@@ -49,7 +49,7 @@ func fileExists(p string) bool {
 }
 
 func init() {
-	var subnet string
+	var subnet, vipRange string
 	var httpPort int
 	bootstrap := &cobra.Command{
 		Use:   "bootstrap",
@@ -60,12 +60,13 @@ func init() {
 				return err
 			}
 			defer h.Close()
-			return h.Agent(cmd.Context(), []string{"bootstrap", "--subnet", subnet, "--http-port", strconv.Itoa(httpPort)},
+			return h.Agent(cmd.Context(), []string{"bootstrap", "--subnet", subnet, "--http-port", strconv.Itoa(httpPort), "--vip-range", vipRange},
 				nil, cmd.OutOrStdout(), cmd.ErrOrStderr())
 		},
 	}
 	bootstrap.Flags().StringVar(&subnet, "subnet", "10.77.0.1/24", "gateway address/CIDR of the gci bridge")
 	bootstrap.Flags().IntVar(&httpPort, "http-port", 80, "host port Envoy listens on")
+	bootstrap.Flags().StringVar(&vipRange, "vip-range", "10.77.1.0/24", "service VIP range, routed to Envoy")
 
 	deploy := &cobra.Command{
 		Use:   "deploy",

@@ -1,0 +1,37 @@
+# Postgres + ClickHouse + a Python app (API + static frontend) behind Envoy.
+app = "platform"
+
+[services.postgres]
+packages = ["postgresql_16"]
+volumes = { pgdata = "/var/lib/postgresql" }
+env = { PGDATA = "/var/lib/postgresql/16", POSTGRES_PASSWORD = "change-me" }
+# runs before every start; initialises the cluster on first boot only
+setup = '''
+if [ ! -s "$PGDATA/PG_VERSION" ]; then
+  printf '%s' "$POSTGRES_PASSWORD" > /tmp/pwfile
+  initdb -D "$PGDATA" -U postgres --auth-local=trust --auth-host=scram-sha-256 --pwfile=/tmp/pwfile
+  rm /tmp/pwfile
+  echo "host all all 0.0.0.0/0 scram-sha-256" >> "$PGDATA/pg_hba.conf"
+fi
+'''
+command = "postgres -D $PGDATA -c listen_addresses=* -k /tmp"
+port = 5432
+memory = "1GiB"
+
+[services.clickhouse]
+packages = ["clickhouse"]
+volumes = { chdata = "/var/lib/clickhouse" }
+command = "clickhouse server -- --path=/var/lib/clickhouse/ --listen_host=0.0.0.0"
+port = 8123
+health = "/ping"
+memory = "2GiB"
+
+[services.web]
+packages = ["python3.withPackages (p: [ p.psycopg ])"]
+source = "./app"
+command = "python3 server.py"
+port = 8080
+health = "/healthz"
+depends_on = ["postgres", "clickhouse"]
+routes = [{ prefix = "/" }]
+env = { DATABASE_URL = "postgresql://postgres:change-me@postgres.platform.internal:5432/postgres", CLICKHOUSE_URL = "http://clickhouse.platform.internal:8123" }

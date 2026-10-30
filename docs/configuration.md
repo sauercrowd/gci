@@ -38,7 +38,9 @@ memory         = "1GiB"
 | `routes` | Envoy routes. `host` defaults to `*` and `prefix` to `/`. |
 | `cpu`, `memory` | Incus `limits.cpu` and `limits.memory`. |
 
-Services resolve each other by service name (gci manages `/etc/hosts` in every container).
+Every service with a `port` gets a stable virtual IP (VIP) from the host's VIP range (`10.77.1.0/24` by default) and the name `<service>.<app>.internal`, e.g. `postgres.platform.internal:5432`. The VIP belongs to Envoy, not to a container: Envoy proxies it to whichever container is current, so the address never changes across deploys. Services with a `health` path are proxied as HTTP (request draining, access logs); everything else as plain TCP. Containers have `<app>.internal` as a search domain, so a bare `postgres` also works within an app.
+
+`*.internal` lookups are forwarded from the bridge's dnsmasq to Envoy's DNS listener, which answers from the same config it routes with, so deploys never rewrite DNS or `/etc/hosts`. Existing TCP connections are not migrated when a backend is replaced; clients reconnect to the new one through the same VIP.
 
 ## Revisions
 

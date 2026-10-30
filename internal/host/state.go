@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"sort"
@@ -24,9 +25,64 @@ type ServiceState struct {
 	IP        string            `json:"ip"`
 	Rev       string            `json:"rev"`
 	Env       string            `json:"env"`
+	VIP       string            `json:"vip,omitempty"`
+	HTTP      bool              `json:"http,omitempty"`
 	Port      int               `json:"port,omitempty"`
 	Routes    []config.Route    `json:"routes,omitempty"`
 	Volumes   map[string]string `json:"volumes,omitempty"`
+}
+
+// HostConfig is written by bootstrap and read by every later agent call.
+type HostConfig struct {
+	EnvoyIP  string `json:"envoy_ip"`
+	VIPRange string `json:"vip_range"`
+}
+
+func hostConfigPath() string { return filepath.Join(stateRoot, "host.json") }
+
+func loadHostConfig() (*HostConfig, error) {
+	raw, err := os.ReadFile(hostConfigPath())
+	if err != nil {
+		return nil, fmt.Errorf("read %s (re-run `gci bootstrap`): %w", hostConfigPath(), err)
+	}
+	hc := &HostConfig{}
+	return hc, json.Unmarshal(raw, hc)
+}
+
+func (h *HostConfig) save() error {
+	raw, err := json.MarshalIndent(h, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeFileAtomic(hostConfigPath(), raw, 0o644)
+}
+
+// allocateVIP returns the lowest address in the VIP range not used by any
+// service on this host. st is the in-memory state of the app being deployed.
+func allocateVIP(hc *HostConfig, st *AppState) (string, error) {
+	prefix, err := netip.ParsePrefix(hc.VIPRange)
+	if err != nil {
+		return "", err
+	}
+	used := map[string]bool{}
+	all, err := loadAllStates()
+	if err != nil {
+		return "", err
+	}
+	for _, s := range append(all, st) {
+		if s.App == st.App && s != st {
+			continue
+		}
+		for _, svc := range s.Services {
+			used[svc.VIP] = true
+		}
+	}
+	for a := prefix.Masked().Addr().Next(); prefix.Contains(a); a = a.Next() {
+		if !used[a.String()] && prefix.Contains(a.Next()) {
+			return a.String(), nil
+		}
+	}
+	return "", fmt.Errorf("VIP range %s exhausted", hc.VIPRange)
 }
 
 func appDir(app string) string    { return filepath.Join(stateRoot, "apps", app) }

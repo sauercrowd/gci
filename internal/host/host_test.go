@@ -17,7 +17,8 @@ func TestEnvoyResources(t *testing.T) {
 			"db":  {IP: "10.0.0.4", Port: 5432},
 		},
 	}}
-	lds, cds, err := envoyResources(states, 10080)
+	states[0].Services["db"].VIP = "10.77.1.4"
+	lds, cds, err := envoyResources(states, 10080, "10.77.0.2")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,6 +35,11 @@ func TestEnvoyResources(t *testing.T) {
 	// longest prefix first within the default vhost
 	if strings.Index(s, `"prefix": "/api"`) > strings.Index(s, `"cluster": "demo_web"`) {
 		t.Errorf("/api route must precede / route:\n%s", s)
+	}
+	for _, want := range []string{`"db.demo.internal"`, `"10.77.1.4"`, `"svc_demo_db"`, "tcp_proxy", "dns_filter"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("missing %s in LDS", want)
+		}
 	}
 	if !strings.Contains(s, `"api.example.com"`) || !strings.Contains(s, `"port_value": 10080`) {
 		t.Errorf("missing host vhost or listener port:\n%s", s)

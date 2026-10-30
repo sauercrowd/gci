@@ -20,7 +20,7 @@ func Status(ctx context.Context, w io.Writer, app string) error {
 		return nil
 	}
 	tw := tabwriter.NewWriter(w, 0, 2, 2, ' ', 0)
-	fmt.Fprintln(tw, "SERVICE\tSTATE\tUNIT\tIP\tPORT\tREV\tCONTAINER")
+	fmt.Fprintln(tw, "SERVICE\tSTATE\tUNIT\tADDRESS\tIP\tREV\tCONTAINER")
 	for _, name := range sortedKeys(st.Services) {
 		s := st.Services[name]
 		state, unit := "missing", "-"
@@ -31,11 +31,11 @@ func Status(ctx context.Context, w io.Writer, app string) error {
 				unit = strings.TrimSpace(out)
 			}
 		}
-		port := "-"
+		addr := "-"
 		if s.Port != 0 {
-			port = fmt.Sprint(s.Port)
+			addr = fmt.Sprintf("%s:%d", internalName(app, name), s.Port)
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", name, state, unit, s.IP, port, s.Rev[:8], s.Container)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", name, state, unit, addr, s.IP, s.Rev[:8], s.Container)
 	}
 	return tw.Flush()
 }

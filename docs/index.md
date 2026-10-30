@@ -25,6 +25,6 @@ Deploy services to any Linux host over SSH, without building images.
 
 **Deploy** ships only changed sources, realises only missing Nix paths, and replaces only services whose revision changed. Stateless services roll with no downtime, and stateful services are stopped and then restarted on the same volume.
 
-**Service discovery:** services reach each other by name (`postgres:5432`). External traffic enters through Envoy using each service's `routes`.
+**Service discovery:** services reach each other through Envoy on stable per-service VIPs (`postgres.platform.internal:5432`). External traffic enters through Envoy using each service's `routes`.
 
 Current scope is a single host. Multi-host networking over WireGuard is planned.

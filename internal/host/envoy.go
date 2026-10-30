@@ -1,11 +1,13 @@
 package host
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 const envoyConfigMount = "/etc/gci-envoy"
@@ -18,13 +20,13 @@ dynamic_resources:
   lds_config:
     resource_api_version: V3
     path_config_source:
-      path: %[1]s/lds.json
-      watched_directory: { path: %[1]s }
+      path: %[1]s/lds/lds.json
+      watched_directory: { path: %[1]s/lds }
   cds_config:
     resource_api_version: V3
     path_config_source:
-      path: %[1]s/cds.json
-      watched_directory: { path: %[1]s }
+      path: %[1]s/cds/cds.json
+      watched_directory: { path: %[1]s/cds }
 admin:
   address:
     socket_address: { address: 127.0.0.1, port_value: %[2]d }
@@ -40,12 +42,12 @@ func socketAddress(ip string, port int) any_ {
 }
 
 // envoyResources renders the LDS and CDS documents for every app on this host.
-func envoyResources(states []*AppState, httpPort int) (lds, cds []byte, err error) {
+func envoyResources(states []*AppState, httpPort int, envoyIP string) (lds, cds []byte, err error) {
 	type route struct {
 		prefix, cluster string
 	}
 	vhosts := map[string][]route{}
-	var clusters []any
+	var clusters, listeners, dnsNames []any
 	for _, st := range states {
 		svcs := make([]string, 0, len(st.Services))
 		for name := range st.Services {
@@ -70,6 +72,11 @@ func envoyResources(states []*AppState, httpPort int) (lds, cds []byte, err erro
 					}}},
 				},
 			})
+			if s.VIP != "" {
+				fqdn := internalName(st.App, name)
+				dnsNames = append(dnsNames, any_{"name": fqdn, "endpoint": any_{"address_list": any_{"address": []string{s.VIP}}}})
+				listeners = append(listeners, serviceListener(st.App, name, s, cn))
+			}
 			for _, r := range s.Routes {
 				vhosts[r.Host] = append(vhosts[r.Host], route{r.Prefix, cn})
 			}
@@ -111,12 +118,9 @@ func envoyResources(states []*AppState, httpPort int) (lds, cds []byte, err erro
 		"filter_chains": []any{any_{"filters": []any{any_{
 			"name": "envoy.filters.network.http_connection_manager",
 			"typed_config": any_{
-				"@type":       "type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager",
-				"stat_prefix": "http",
-				"access_log": []any{any_{
-					"name":         "envoy.access_loggers.stdout",
-					"typed_config": any_{"@type": "type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog"},
-				}},
+				"@type":        "type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager",
+				"stat_prefix":  "http",
+				"access_log":   accessLog(),
 				"route_config": any_{"name": "gci", "virtual_hosts": vhs},
 				"http_filters": []any{any_{
 					"name":         "envoy.filters.http.router",
@@ -128,12 +132,85 @@ func envoyResources(states []*AppState, httpPort int) (lds, cds []byte, err erro
 	if clusters == nil {
 		clusters = []any{}
 	}
-	lds, err = json.MarshalIndent(any_{"resources": []any{listener}}, "", "  ")
+	listeners = append([]any{listener}, listeners...)
+	if envoyIP != "" {
+		if dnsNames == nil {
+			dnsNames = []any{}
+		}
+		listeners = append(listeners, any_{
+			"@type":   "type.googleapis.com/envoy.config.listener.v3.Listener",
+			"name":    "dns",
+			"address": any_{"socket_address": any_{"protocol": "UDP", "address": envoyIP, "port_value": 53}},
+			"listener_filters": []any{any_{
+				"name": "envoy.filters.udp.dns_filter",
+				"typed_config": any_{
+					"@type":         "type.googleapis.com/envoy.extensions.filters.udp.dns_filter.v3.DnsFilterConfig",
+					"stat_prefix":   "dns",
+					"server_config": any_{"inline_dns_table": any_{"virtual_domains": dnsNames}},
+				},
+			}},
+		})
+	}
+	lds, err = json.MarshalIndent(any_{"resources": listeners}, "", "  ")
 	if err != nil {
 		return nil, nil, err
 	}
 	cds, err = json.MarshalIndent(any_{"resources": clusters}, "", "  ")
 	return lds, cds, err
+}
+
+// internalName is the DNS name other services use, e.g. postgres.platform.internal.
+func internalName(app, svc string) string { return svc + "." + app + ".internal" }
+
+func accessLog() []any {
+	return []any{any_{
+		"name":         "envoy.access_loggers.stdout",
+		"typed_config": any_{"@type": "type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog"},
+	}}
+}
+
+// serviceListener binds the service's VIP:port. HTTP services (those with a
+// health path) get an HTTP proxy so in-flight requests drain on rollout;
+// everything else is proxied as plain TCP.
+func serviceListener(app, name string, s *ServiceState, cluster string) any {
+	var filter any
+	if s.HTTP {
+		filter = any_{
+			"name": "envoy.filters.network.http_connection_manager",
+			"typed_config": any_{
+				"@type":       "type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager",
+				"stat_prefix": "svc_" + cluster,
+				"access_log":  accessLog(),
+				"route_config": any_{"name": cluster, "virtual_hosts": []any{any_{
+					"name": cluster, "domains": []string{"*"},
+					"routes": []any{any_{
+						"match": any_{"prefix": "/"},
+						"route": any_{"cluster": cluster, "timeout": "60s", "upgrade_configs": []any{any_{"upgrade_type": "websocket"}}},
+					}},
+				}}},
+				"http_filters": []any{any_{
+					"name":         "envoy.filters.http.router",
+					"typed_config": any_{"@type": "type.googleapis.com/envoy.extensions.filters.http.router.v3.Router"},
+				}},
+			},
+		}
+	} else {
+		filter = any_{
+			"name": "envoy.filters.network.tcp_proxy",
+			"typed_config": any_{
+				"@type":       "type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy",
+				"stat_prefix": "svc_" + cluster,
+				"cluster":     cluster,
+				"access_log":  accessLog(),
+			},
+		}
+	}
+	return any_{
+		"@type":         "type.googleapis.com/envoy.config.listener.v3.Listener",
+		"name":          "svc_" + cluster,
+		"address":       socketAddress(s.VIP, s.Port),
+		"filter_chains": []any{any_{"filters": []any{filter}}},
+	}
 }
 
 func vhostName(host string) string {
@@ -150,12 +227,49 @@ func writeEnvoyConfig(httpPort int) error {
 	if err != nil {
 		return err
 	}
-	lds, cds, err := envoyResources(states, httpPort)
+	envoyIP := ""
+	if hc, err := loadHostConfig(); err == nil {
+		envoyIP = hc.EnvoyIP
+	}
+	lds, cds, err := envoyResources(states, httpPort, envoyIP)
 	if err != nil {
 		return err
 	}
-	if err := writeFileAtomic(filepath.Join(envoyDir(), "config", "cds.json"), cds, 0o644); err != nil {
+	if err := writeFileAtomic(filepath.Join(envoyDir(), "config", "cds", "cds.json"), cds, 0o644); err != nil {
 		return err
 	}
-	return writeFileAtomic(filepath.Join(envoyDir(), "config", "lds.json"), lds, 0o644)
+	waitEnvoyClusters(cds)
+	return writeFileAtomic(filepath.Join(envoyDir(), "config", "lds", "lds.json"), lds, 0o644)
+}
+
+// waitEnvoyClusters blocks until a running Envoy has loaded every cluster in
+// cds; Envoy rejects an LDS update that routes to a cluster it doesn't know.
+func waitEnvoyClusters(cds []byte) {
+	var doc struct {
+		Resources []struct {
+			Name string `json:"name"`
+		} `json:"resources"`
+	}
+	if json.Unmarshal(cds, &doc) != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	for ctx.Err() == nil {
+		out, err := incus(ctx, "exec", envoyName, "--", "curl", "-sf", "127.0.0.1:9901/clusters")
+		if err != nil {
+			return // Envoy not running yet; it reads both files on start.
+		}
+		loaded := true
+		for _, r := range doc.Resources {
+			if !strings.Contains(out, r.Name+"::") {
+				loaded = false
+				break
+			}
+		}
+		if loaded {
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
 }
