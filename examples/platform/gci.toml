@@ -4,7 +4,8 @@ app = "platform"
 [services.postgres]
 packages = ["postgresql_16"]
 volumes = { pgdata = "/var/lib/postgresql" }
-env = { PGDATA = "/var/lib/postgresql/16", POSTGRES_PASSWORD = "change-me" }
+env = { PGDATA = "/var/lib/postgresql/16" }
+secrets = { POSTGRES_PASSWORD = "postgres-password" }
 # runs before every start; initialises the cluster on first boot only
 setup = '''
 if [ ! -s "$PGDATA/PG_VERSION" ]; then
@@ -34,4 +35,5 @@ port = 8080
 health = "/healthz"
 depends_on = ["postgres", "clickhouse"]
 routes = [{ prefix = "/" }]
-env = { DATABASE_URL = "postgresql://postgres:change-me@postgres.platform.internal:5432/postgres", CLICKHOUSE_URL = "http://clickhouse.platform.internal:8123" }
+env = { CLICKHOUSE_URL = "http://clickhouse.platform.internal:8123" }
+secrets = { DATABASE_URL = "database-url" }

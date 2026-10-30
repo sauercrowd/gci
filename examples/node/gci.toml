@@ -1,0 +1,13 @@
+app = "nodeapp"
+
+[services.web]
+packages = ["nodejs_22"]
+source = "./app"
+install = "npm ci"
+build = "npm run build"
+command = "node server.js"
+port = 8080
+health = "/healthz"
+routes = [{ host = "node.localhost", prefix = "/" }]
+env = { APP_VERSION = "1.0.0" }
+secrets = { SESSION_SECRET = "session-secret" }
