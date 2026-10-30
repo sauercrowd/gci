@@ -32,8 +32,54 @@ func TestCappedHealthWriterKeepsSecretsWholeForRedaction(t *testing.T) {
 	if !strings.Contains(output, "[REDACTED]") {
 		t.Fatalf("sanitized output %q does not include [REDACTED]", output)
 	}
+	assertNo16ByteSecretSubstring(t, output, secret)
+}
+
+func TestSanitizeHealthOutputDoesNotExposeSecretAfterRedactionShrink(t *testing.T) {
+	secretA := strings.Repeat("a", 20)
+	secretB := strings.Repeat("b", maxSecretSize)
+	raw := strings.Repeat(secretA, 200) + secretB
+	w := &cappedHealthWriter{limit: maxHealthCommandOutput + maxSecretSize}
+	if _, err := w.Write([]byte(raw)); err != nil {
+		t.Fatal(err)
+	}
+	captured := w.String()
+	if len(captured) != maxHealthCommandOutput+maxSecretSize {
+		t.Fatalf("captured output length = %d, want cap %d", len(captured), maxHealthCommandOutput+maxSecretSize)
+	}
+
+	output := sanitizeHealthOutput(captured, map[string]string{"A": secretA, "B": secretB})
+	if !strings.Contains(output, "[REDACTED]") {
+		t.Fatalf("sanitized output %q does not include [REDACTED]", output)
+	}
+	assertNo16ByteSecretSubstring(t, output, secretB)
+}
+
+func TestSanitizeHealthOutputRedactsSecretAcrossRawOutputLimit(t *testing.T) {
+	secret := strings.Repeat("s", 32)
+	raw := strings.Repeat("f", maxHealthCommandOutput-16) + secret + "tail"
+	w := &cappedHealthWriter{limit: maxHealthCommandOutput + maxSecretSize}
+	if _, err := w.Write([]byte(raw)); err != nil {
+		t.Fatal(err)
+	}
+
+	output := sanitizeHealthOutput(w.String(), map[string]string{"TOKEN": secret})
+	if !strings.Contains(output, "[REDACTED]") {
+		t.Fatalf("sanitized output %q does not include [REDACTED]", output)
+	}
+	assertNo16ByteSecretSubstring(t, output, secret)
+}
+
+func assertNo16ByteSecretSubstring(t *testing.T, output, secret string) {
+	t.Helper()
+	seen := make(map[string]struct{})
 	for i := 0; i+16 <= len(secret); i++ {
-		if strings.Contains(output, secret[i:i+16]) {
+		substring := secret[i : i+16]
+		if _, ok := seen[substring]; ok {
+			continue
+		}
+		seen[substring] = struct{}{}
+		if strings.Contains(output, substring) {
 			t.Fatalf("sanitized output contains a 16-byte substring of the secret: %q", output)
 		}
 	}

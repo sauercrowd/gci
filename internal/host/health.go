@@ -219,14 +219,28 @@ func sanitizeHealthOutput(output string, secrets map[string]string) string {
 		}
 	}
 	sort.Slice(values, func(i, j int) bool { return len(values[i]) > len(values[j]) })
-	for _, value := range values {
-		output = strings.ReplaceAll(output, value, "[REDACTED]")
+	var sanitized strings.Builder
+	i := 0
+	for i < len(output) && i < maxHealthCommandOutput {
+		matched := ""
+		for _, value := range values {
+			if strings.HasPrefix(output[i:], value) {
+				matched = value
+				break
+			}
+		}
+		if matched != "" {
+			sanitized.WriteString("[REDACTED]")
+			i += len(matched)
+		} else {
+			sanitized.WriteByte(output[i])
+			i++
+		}
 	}
-	output = strings.TrimSpace(output)
-	if len(output) > maxHealthCommandOutput {
-		output = output[:maxHealthCommandOutput] + "…"
+	if i < len(output) {
+		sanitized.WriteString("…")
 	}
-	return output
+	return strings.TrimSpace(sanitized.String())
 }
 
 func healthOutputDetail(output string) string {
