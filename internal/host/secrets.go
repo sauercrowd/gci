@@ -146,11 +146,14 @@ func secretDigestKey() ([]byte, error) {
 	if _, err := rand.Read(key); err != nil {
 		return nil, err
 	}
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if os.IsExist(err) {
-		return readSecretDigestKey(path)
-	}
+	file, err := os.CreateTemp(secretRoot, ".digest-key-*")
 	if err != nil {
+		return nil, err
+	}
+	tempPath := file.Name()
+	defer os.Remove(tempPath)
+	if err := file.Chmod(0o600); err != nil {
+		_ = file.Close()
 		return nil, err
 	}
 	n, writeErr := file.Write(key)
@@ -160,15 +163,18 @@ func secretDigestKey() ([]byte, error) {
 	if writeErr == nil {
 		writeErr = file.Sync()
 	}
-	if chmodErr := file.Chmod(0o600); writeErr == nil {
-		writeErr = chmodErr
-	}
-	if closeErr := file.Close(); writeErr == nil {
-		writeErr = closeErr
-	}
+	closeErr := file.Close()
 	if writeErr != nil {
-		_ = os.Remove(path)
 		return nil, writeErr
+	}
+	if closeErr != nil {
+		return nil, closeErr
+	}
+	if err := os.Link(tempPath, path); err != nil {
+		if os.IsExist(err) {
+			return readSecretDigestKey(path)
+		}
+		return nil, err
 	}
 	return key, nil
 }
