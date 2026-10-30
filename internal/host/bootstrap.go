@@ -2,6 +2,7 @@ package host
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/netip"
@@ -18,10 +19,11 @@ import (
 const envoyListenPort = 10080
 
 type BootstrapOptions struct {
-	Subnet   string // gateway CIDR for the gci bridge, e.g. 10.77.0.1/24
-	VIPRange string // service VIPs, routed to Envoy, e.g. 10.77.1.0/24
-	HTTPPort int
-	Nixpkgs  string
+	Subnet      string // gateway CIDR for the gci bridge, e.g. 10.77.0.1/24
+	VIPRange    string // service VIPs, routed to Envoy, e.g. 10.77.1.0/24
+	StorageSize string
+	HTTPPort    int
+	Nixpkgs     string
 }
 
 // Bootstrap prepares a host once: Incus, Nix, the gci bridge + profile, the
@@ -36,6 +38,9 @@ func Bootstrap(ctx context.Context, w io.Writer, opts BootstrapOptions) error {
 	if opts.VIPRange == "" {
 		opts.VIPRange = "10.77.1.0/24"
 	}
+	if opts.StorageSize == "" {
+		opts.StorageSize = "50GiB"
+	}
 	gw, err := netip.ParsePrefix(opts.Subnet)
 	if err != nil {
 		return fmt.Errorf("subnet: %w", err)
@@ -47,7 +52,7 @@ func Bootstrap(ctx context.Context, w io.Writer, opts BootstrapOptions) error {
 	if vips.Overlaps(gw.Masked()) {
 		return fmt.Errorf("vip range %s overlaps subnet %s", opts.VIPRange, opts.Subnet)
 	}
-	hc := &HostConfig{EnvoyIP: gw.Addr().Next().String(), VIPRange: opts.VIPRange}
+	hc := &HostConfig{EnvoyIP: gw.Addr().Next().String(), VIPRange: opts.VIPRange, StoragePool: "gci"}
 	if opts.HTTPPort == 0 {
 		opts.HTTPPort = 80
 	}
@@ -59,15 +64,18 @@ func Bootstrap(ctx context.Context, w io.Writer, opts BootstrapOptions) error {
 		return err
 	}
 	defer unlock()
-	if err := hc.save(); err != nil {
-		return err
-	}
 
 	steps := []struct {
 		name string
 		fn   func() error
 	}{
 		{"incus", func() error { return ensureIncus(ctx, w) }},
+		{"storage gci", func() error {
+			if err := ensureStoragePool(ctx, w, opts.StorageSize); err != nil {
+				return err
+			}
+			return hc.save()
+		}},
 		{"nix", func() error { return ensureNix(ctx, w) }},
 		{"network " + networkName, func() error { return ensureNetwork(ctx, opts.Subnet, hc) }},
 		{"firewall", func() error { return ensureFirewallUnit(ctx) }},
@@ -83,6 +91,33 @@ func Bootstrap(ctx context.Context, w io.Writer, opts BootstrapOptions) error {
 	}
 	fmt.Fprintf(w, "host ready; front door on :%d\n", opts.HTTPPort)
 	return nil
+}
+
+func ensureStoragePool(ctx context.Context, w io.Writer, size string) error {
+	if exists(ctx, "storage", "show", "gci") {
+		raw, err := incus(ctx, "storage", "show", "gci", "--format=json")
+		if err != nil {
+			return err
+		}
+		var pool struct {
+			Driver string `json:"driver"`
+		}
+		if err := json.Unmarshal([]byte(raw), &pool); err != nil {
+			return err
+		}
+		if pool.Driver == "dir" {
+			fmt.Fprintln(w, "warning: existing gci storage pool uses the dir driver; release copies may not be copy-on-write")
+		}
+		return nil
+	}
+	if _, ok := lookPath("mkfs.btrfs"); !ok {
+		if err := runStream(ctx, w, "sh", "-c",
+			"apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq btrfs-progs"); err != nil {
+			return err
+		}
+	}
+	_, err := incus(ctx, "storage", "create", "gci", "btrfs", "size="+size)
+	return err
 }
 
 func ensureIncus(ctx context.Context, w io.Writer) error {
@@ -217,7 +252,7 @@ devices:
     source: %s
     path: %s
     readonly: "true"
-`, storagePool, networkName, nixStore, nixStore)
+`, legacyPool, networkName, nixStore, nixStore)
 	_, err := runInput(ctx, strings.NewReader(profile), "incus", "profile", "edit", profileName)
 	return err
 }

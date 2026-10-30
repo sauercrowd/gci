@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"syscall"
+	"time"
 
 	"github.com/sauercrowd/gci/internal/config"
 )
@@ -18,6 +19,7 @@ const stateRoot = "/var/lib/gci"
 type AppState struct {
 	App      string                   `json:"app"`
 	Services map[string]*ServiceState `json:"services"`
+	Releases map[string][]*Release    `json:"releases,omitempty"`
 }
 
 type ServiceState struct {
@@ -25,6 +27,7 @@ type ServiceState struct {
 	IP        string            `json:"ip"`
 	Rev       string            `json:"rev"`
 	Env       string            `json:"env"`
+	Release   string            `json:"release,omitempty"`
 	VIP       string            `json:"vip,omitempty"`
 	HTTP      bool              `json:"http,omitempty"`
 	Port      int               `json:"port,omitempty"`
@@ -32,10 +35,20 @@ type ServiceState struct {
 	Volumes   map[string]string `json:"volumes,omitempty"`
 }
 
+type Release struct {
+	Key      string    `json:"key"`
+	Instance string    `json:"instance"`
+	Deps     string    `json:"deps,omitempty"`
+	Env      string    `json:"env"`
+	Source   string    `json:"source"`
+	Created  time.Time `json:"created"`
+}
+
 // HostConfig is written by bootstrap and read by every later agent call.
 type HostConfig struct {
-	EnvoyIP  string `json:"envoy_ip"`
-	VIPRange string `json:"vip_range"`
+	EnvoyIP     string `json:"envoy_ip"`
+	VIPRange    string `json:"vip_range"`
+	StoragePool string `json:"storage_pool"`
 }
 
 func hostConfigPath() string { return filepath.Join(stateRoot, "host.json") }
@@ -46,7 +59,13 @@ func loadHostConfig() (*HostConfig, error) {
 		return nil, fmt.Errorf("read %s (re-run `gci bootstrap`): %w", hostConfigPath(), err)
 	}
 	hc := &HostConfig{}
-	return hc, json.Unmarshal(raw, hc)
+	if err := json.Unmarshal(raw, hc); err != nil {
+		return nil, err
+	}
+	if hc.StoragePool == "" {
+		return nil, fmt.Errorf("host was bootstrapped before release snapshots; re-run `gci bootstrap`")
+	}
+	return hc, nil
 }
 
 func (h *HostConfig) save() error {
@@ -88,6 +107,9 @@ func allocateVIP(hc *HostConfig, st *AppState) (string, error) {
 func appDir(app string) string    { return filepath.Join(stateRoot, "apps", app) }
 func statePath(app string) string { return filepath.Join(appDir(app), "state.json") }
 func envoyDir() string            { return filepath.Join(stateRoot, "envoy") }
+func releaseRoot(app, svc, key string) string {
+	return filepath.Join(appDir(app), "releases", svc, key[:12])
+}
 func sourceDir(app, svc, hash string) string {
 	return filepath.Join(appDir(app), "sources", svc, hash)
 }

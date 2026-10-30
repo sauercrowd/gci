@@ -110,6 +110,9 @@ func preflight(ctx context.Context) error {
 	if _, ok := lookPath("incus"); !ok {
 		return fmt.Errorf("incus not installed; run `gci bootstrap`")
 	}
+	if _, err := loadHostConfig(); err != nil {
+		return err
+	}
 	if inst, err := getInstance(ctx, envoyName); err != nil || inst == nil {
 		return fmt.Errorf("host not bootstrapped (no %s); run `gci bootstrap`", envoyName)
 	}
@@ -137,23 +140,82 @@ func Apply(ctx context.Context, w io.Writer, plan Plan) error {
 	if err != nil {
 		return err
 	}
+	if st.Releases == nil {
+		st.Releases = map[string][]*Release{}
+	}
 	order, err := cfg.Order()
 	if err != nil {
 		return err
 	}
 	start := time.Now()
+	hc, err := loadHostConfig()
+	if err != nil {
+		return err
+	}
+	resolved := make(map[string]map[string]string, len(order))
+	var missing []string
+	for _, name := range order {
+		svc := cfg.Services[name]
+		if svc.Source != "" && (plan.Sources[name] == "" || !HasSource(cfg.App, name, plan.Sources[name])) {
+			return fmt.Errorf("%s: source %s was not uploaded", name, plan.Sources[name])
+		}
+		values, err := resolveSecrets(cfg.App, svc)
+		if err != nil {
+			if strings.HasPrefix(err.Error(), "missing secrets:") {
+				missing = append(missing, name+": "+strings.TrimPrefix(err.Error(), "missing secrets: "))
+				continue
+			}
+			return fmt.Errorf("%s: %w", name, err)
+		}
+		resolved[name] = values
+	}
+	if len(missing) != 0 {
+		return fmt.Errorf("missing secrets: %s", strings.Join(missing, "; "))
+	}
+
+	baseFP := ""
+	for _, name := range order {
+		if cfg.Services[name].Source != "" {
+			baseFP, err = baseFingerprint(ctx)
+			if err != nil {
+				return err
+			}
+			break
+		}
+	}
+	prepared := make(map[string]preparedService, len(order))
+	for _, name := range order {
+		svc := cfg.Services[name]
+		t := time.Now()
+		nextLink := profileLink(cfg.App, name, ".next")
+		env, err := buildEnv(ctx, cfg.Nixpkgs, "gci-"+cfg.App+"-"+name,
+			append(append([]string{}, svc.Packages...), basePackages...), nextLink)
+		_ = os.Remove(nextLink)
+		if err != nil {
+			return fmt.Errorf("%s: nix: %w", name, err)
+		}
+		fmt.Fprintf(w, "==> %s: env %s (%s)\n", name, filepath.Base(env), time.Since(t).Round(time.Millisecond))
+		item := preparedService{env: env, secrets: resolved[name]}
+		if svc.Source != "" {
+			item.release, err = prepareRelease(ctx, w, hc, cfg, name, env, baseFP, plan.Sources[name], st)
+			if err != nil {
+				return fmt.Errorf("%s: %w", name, err)
+			}
+		}
+		prepared[name] = item
+	}
+
 	var changed []string
 	if err := writeEnvoyConfig(envoyListenPort); err != nil {
 		return err
 	}
 	for _, name := range order {
-		did, err := applyService(ctx, w, cfg, name, plan.Sources[name], st)
+		did, err := applyService(ctx, w, hc, cfg, name, plan.Sources[name], prepared[name], st)
 		if err != nil {
 			return fmt.Errorf("%s: %w", name, err)
 		}
 		if did {
 			changed = append(changed, name)
-			// Dependents resolve this service via its VIP, so publish it now.
 			if err := writeEnvoyConfig(envoyListenPort); err != nil {
 				return err
 			}
@@ -167,8 +229,21 @@ func Apply(ctx context.Context, w io.Writer, plan Plan) error {
 		fmt.Fprintf(w, "==> %s: removed from config, deleting %s (volumes kept)\n", name, s.Container)
 		_ = deleteInstance(ctx, s.Container)
 		delete(st.Services, name)
+		for _, rel := range st.Releases[name] {
+			_ = deleteInstance(ctx, rel.Instance)
+			_ = os.Remove(releaseRoot(cfg.App, name, rel.Key))
+		}
+		delete(st.Releases, name)
 		_ = os.Remove(profileLink(cfg.App, name, ""))
 		_ = os.Remove(profileLink(cfg.App, name, ".prev"))
+	}
+	for name := range st.Releases {
+		if _, ok := cfg.Services[name]; !ok {
+			delete(st.Releases, name)
+		}
+	}
+	if err := pruneAppReleases(ctx, st, 3); err != nil {
+		return err
 	}
 	if err := st.save(); err != nil {
 		return err
@@ -188,20 +263,25 @@ func Apply(ctx context.Context, w io.Writer, plan Plan) error {
 }
 
 func revision(cfg *config.Config, name, env, sourceHash string) string {
+	return revisionWithSecrets(cfg, name, env, sourceHash, "")
+}
+
+func revisionWithSecrets(cfg *config.Config, name, env, releaseKey, secretsHash string) string {
 	svc := *cfg.Services[name]
 	svc.Source = ""
 	svc.Routes = nil // routing changes do not require a new container
 	raw, _ := json.Marshal(struct {
-		Svc    config.Service
-		Env    string
-		Source string
-		Net    string // bump to recreate containers when in-container networking changes
-	}{svc, env, sourceHash, "vip"})
+		Svc     config.Service
+		Env     string
+		Release string
+		Secrets string
+		Net     string
+	}{svc, env, releaseKey, secretsHash, "release"})
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:])[:12]
 }
 
-func applyService(ctx context.Context, w io.Writer, cfg *config.Config, name, sourceHash string, st *AppState) (bool, error) {
+func applyService(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.Config, name, sourceHash string, prepared preparedService, st *AppState) (bool, error) {
 	svc := cfg.Services[name]
 	app := cfg.App
 	logf := func(format string, a ...any) { fmt.Fprintf(w, "==> %s: "+format+"\n", append([]any{name}, a...)...) }
@@ -211,15 +291,12 @@ func applyService(ctx context.Context, w io.Writer, cfg *config.Config, name, so
 	}
 
 	t := time.Now()
-	nextLink := profileLink(app, name, ".next")
-	env, err := buildEnv(ctx, cfg.Nixpkgs, "gci-"+app+"-"+name, append(append([]string{}, svc.Packages...), basePackages...), nextLink)
-	if err != nil {
-		return false, fmt.Errorf("nix: %w", err)
+	env := prepared.env
+	releaseKey := ""
+	if prepared.release != nil {
+		releaseKey = prepared.release.Key
 	}
-	defer os.Remove(nextLink)
-	logf("env %s (%s)", filepath.Base(env), time.Since(t).Round(time.Millisecond))
-
-	rev := revision(cfg, name, env, sourceHash)
+	rev := revisionWithSecrets(cfg, name, env, releaseKey, secretDigest(prepared.secrets))
 	cur := st.Services[name]
 	if cur != nil && cur.Rev == rev {
 		inst, _ := getInstance(ctx, cur.Container)
@@ -245,8 +322,15 @@ func applyService(ctx context.Context, w io.Writer, cfg *config.Config, name, so
 	}
 	_ = deleteInstance(ctx, container)
 	logf("creating %s", container)
-	args := []string{"init", baseImage, container, "--profile", profileName,
-		"-c", "user.gci.app=" + app, "-c", "user.gci.service=" + name, "-c", "user.gci.rev=" + rev}
+	var args []string
+	if prepared.release != nil {
+		args = []string{"copy", prepared.release.Instance, container, "-s", hc.StoragePool,
+			"-c", "user.gci.role=service", "-c", "user.gci.rev=" + rev}
+	} else {
+		args = []string{"init", baseImage, container, "--profile", profileName, "-s", hc.StoragePool,
+			"-c", "user.gci.app=" + app, "-c", "user.gci.service=" + name,
+			"-c", "user.gci.role=service", "-c", "user.gci.rev=" + rev}
+	}
 	if svc.CPU != "" {
 		args = append(args, "-c", "limits.cpu="+svc.CPU)
 	}
@@ -255,6 +339,12 @@ func applyService(ctx context.Context, w io.Writer, cfg *config.Config, name, so
 	}
 	if _, err := incus(ctx, args...); err != nil {
 		return false, err
+	}
+	if prepared.release != nil {
+		if _, err := incus(ctx, "config", "unset", container, "user.gci.key"); err != nil {
+			_ = deleteInstance(ctx, container)
+			return false, err
+		}
 	}
 	fail := func(err error) (bool, error) {
 		logs, _ := incus(ctx, "exec", container, "--", "journalctl", "-u", unitName(name), "-n", "30", "--no-pager")
@@ -269,21 +359,15 @@ func applyService(ctx context.Context, w io.Writer, cfg *config.Config, name, so
 		return false, err
 	}
 
-	if svc.Source != "" {
-		if _, err := incus(ctx, "config", "device", "add", container, "source", "disk",
-			"source="+sourceDir(app, name, sourceHash), "path=/app", "readonly=true"); err != nil {
-			return fail(err)
-		}
-	}
 	vols := sortedKeys(svc.Volumes)
+	volPools := make(map[string]string, len(vols))
 	for _, vol := range vols {
 		vn := volumeName(app, vol)
-		if !exists(ctx, "storage", "volume", "show", storagePool, vn) {
-			logf("creating volume %s", vn)
-			if _, err := incus(ctx, "storage", "volume", "create", storagePool, vn); err != nil {
-				return fail(err)
-			}
+		pool, err := volumePool(ctx, hc, vn)
+		if err != nil {
+			return fail(err)
 		}
+		volPools[vol] = pool
 	}
 	// Stateful services own their volumes exclusively: stop the old container first.
 	if cur != nil && svc.Stateful() {
@@ -296,7 +380,7 @@ func applyService(ctx context.Context, w io.Writer, cfg *config.Config, name, so
 	}
 	for _, vol := range vols {
 		if _, err := incus(ctx, "config", "device", "add", container, "vol-"+vol, "disk",
-			"pool="+storagePool, "source="+volumeName(app, vol), "path="+svc.Volumes[vol]); err != nil {
+			"pool="+volPools[vol], "source="+volumeName(app, vol), "path="+svc.Volumes[vol]); err != nil {
 			return fail(err)
 		}
 	}
@@ -324,6 +408,9 @@ func applyService(ctx context.Context, w io.Writer, cfg *config.Config, name, so
 		envVars["PORT"] = fmt.Sprint(svc.Port)
 	}
 	for k, v := range svc.Env {
+		envVars[k] = v
+	}
+	for k, v := range prepared.secrets {
 		envVars[k] = v
 	}
 	var pre []string
@@ -391,7 +478,7 @@ func applyService(ctx context.Context, w io.Writer, cfg *config.Config, name, so
 		return false, err
 	}
 	st.Services[name] = &ServiceState{
-		Container: container, IP: ip, VIP: vip, HTTP: svc.Health != "", Rev: rev, Env: env,
+		Container: container, IP: ip, VIP: vip, HTTP: svc.Health != "", Rev: rev, Env: env, Release: releaseKey,
 		Port: svc.Port, Routes: svc.Routes, Volumes: svc.Volumes,
 	}
 	if err := st.save(); err != nil {
@@ -429,9 +516,43 @@ func deleteOrphans(ctx context.Context, st *AppState) error {
 	for _, s := range st.Services {
 		keep[s.Container] = true
 	}
+	for _, rels := range st.Releases {
+		for _, rel := range rels {
+			keep[rel.Instance] = true
+			if rel.Deps != "" {
+				keep[rel.Deps] = true
+			}
+		}
+	}
 	for _, inst := range list {
 		if inst.Config["user.gci.app"] == st.App && !keep[inst.Name] {
-			_ = deleteInstance(ctx, inst.Name)
+			if err := deleteInstance(ctx, inst.Name); err != nil {
+				return fmt.Errorf("delete orphan %s: %w", inst.Name, err)
+			}
+		}
+	}
+	return nil
+}
+
+func pruneAppReleases(ctx context.Context, st *AppState, keep int) error {
+	for name, rels := range st.Releases {
+		current := ""
+		if service := st.Services[name]; service != nil {
+			current = service.Release
+		}
+		kept, dropped := pruneReleases(rels, current, keep)
+		for _, rel := range dropped {
+			if err := deleteExistingInstance(ctx, rel.Instance); err != nil {
+				return err
+			}
+			if err := removeRoot(releaseRoot(st.App, name, rel.Key)); err != nil {
+				return err
+			}
+		}
+		if len(kept) == 0 {
+			delete(st.Releases, name)
+		} else {
+			st.Releases[name] = kept
 		}
 	}
 	return nil

@@ -84,12 +84,26 @@ func Remove(ctx context.Context, w io.Writer, app string, volumes bool) error {
 		}
 	}
 	if volumes {
-		out, _ := incus(ctx, "storage", "volume", "list", storagePool, "--format", "csv", "-c", "n", "type=custom")
-		for _, line := range strings.Split(out, "\n") {
-			if v := strings.TrimSpace(line); strings.HasPrefix(v, "gci-"+app+"-") {
-				fmt.Fprintf(w, "deleting volume %s\n", v)
-				if _, err := incus(ctx, "storage", "volume", "delete", storagePool, v); err != nil {
-					return err
+		hc, err := loadHostConfig()
+		if err != nil {
+			return err
+		}
+		pools := []string{hc.StoragePool}
+		if hc.StoragePool != legacyPool {
+			pools = append(pools, legacyPool)
+		}
+		for _, pool := range pools {
+			out, err := incus(ctx, "storage", "volume", "list", pool, "--format", "csv", "-c", "n", "type=custom")
+			if err != nil {
+				return err
+			}
+			for _, line := range strings.Split(out, "\n") {
+				v := strings.TrimSpace(line)
+				if strings.HasPrefix(v, "gci-"+app+"-") || strings.HasPrefix(v, "gcicache-"+app+"-") {
+					fmt.Fprintf(w, "deleting volume %s (%s)\n", v, pool)
+					if _, err := incus(ctx, "storage", "volume", "delete", pool, v); err != nil {
+						return err
+					}
 				}
 			}
 		}
@@ -99,6 +113,7 @@ func Remove(ctx context.Context, w io.Writer, app string, volumes bool) error {
 				fmt.Fprintf(w, "keeping volume %s (use --volumes to delete)\n", volumeName(app, vol))
 			}
 		}
+		fmt.Fprintf(w, "keeping gci secrets (use `gci secret rm` to remove them)\n")
 	}
 	if err := os.RemoveAll(appDir(app)); err != nil {
 		return err

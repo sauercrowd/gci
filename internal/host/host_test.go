@@ -61,9 +61,37 @@ func TestRevisionIgnoresRoutes(t *testing.T) {
 	}
 }
 
+func TestSecretRevisionScope(t *testing.T) {
+	cfg := &config.Config{App: "a", Services: map[string]*config.Service{
+		"web": {Command: "run", Secrets: map[string]string{"SESSION_SECRET": "session-secret"}},
+		"db":  {Command: "db", Secrets: map[string]string{"PASSWORD": "db-password"}},
+	}}
+	one := revisionWithSecrets(cfg, "web", "/nix/store/env", "release", secretDigest(map[string]string{"SESSION_SECRET": "one"}))
+	two := revisionWithSecrets(cfg, "web", "/nix/store/env", "release", secretDigest(map[string]string{"SESSION_SECRET": "two"}))
+	if one == two {
+		t.Fatal("secret value did not change revision")
+	}
+	other := revisionWithSecrets(cfg, "web", "/nix/store/env", "release", secretDigest(map[string]string{"SESSION_SECRET": "one"}))
+	cfg.Services["db"].Secrets["PASSWORD"] = "another-password"
+	if got := revisionWithSecrets(cfg, "web", "/nix/store/env", "release", secretDigest(map[string]string{"SESSION_SECRET": "one"})); got != other {
+		t.Fatal("another service's secret changed web revision")
+	}
+}
+
+func TestPruneReleases(t *testing.T) {
+	rels := []*Release{{Key: "one"}, {Key: "two"}, {Key: "three"}, {Key: "four"}}
+	kept, dropped := pruneReleases(rels, "one", 3)
+	if len(kept) != 3 || kept[0].Key != "one" || kept[1].Key != "three" || kept[2].Key != "four" {
+		t.Fatalf("kept = %#v", kept)
+	}
+	if len(dropped) != 1 || dropped[0].Key != "two" {
+		t.Fatalf("dropped = %#v", dropped)
+	}
+}
+
 func TestEnvFileQuoting(t *testing.T) {
-	got := renderEnvFile(map[string]string{"B": `say "hi"`, "A": "1"})
-	if got != "A=\"1\"\nB=\"say \\\"hi\\\"\"\n" {
+	got := renderEnvFile(map[string]string{"B": `say "hi"`, "A": "1", "TOKEN": "secret-value"})
+	if got != "A=\"1\"\nB=\"say \\\"hi\\\"\"\nTOKEN=\"secret-value\"\n" {
 		t.Errorf("got %q", got)
 	}
 	if shellScript("run me") != "#!/bin/sh\nset -e\nexec run me\n" {

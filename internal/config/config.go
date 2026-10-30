@@ -2,6 +2,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -18,6 +19,14 @@ const DefaultNixpkgs = "github:NixOS/nixpkgs/08d3a97586f6b6343b3b5e7999807736294
 const DefaultFileName = "gci.toml"
 
 var nameRe = regexp.MustCompile(`^[a-z][a-z0-9-]{0,23}$`)
+var envNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+var secretNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,62}$`)
+
+var defaultInstallInputs = []string{
+	"package.json", "package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml",
+	"yarn.lock", ".npmrc", "pyproject.toml", "uv.lock", "requirements.txt",
+	"poetry.lock", "Pipfile", "Pipfile.lock",
+}
 
 type Config struct {
 	App      string              `toml:"app" json:"app"`
@@ -30,19 +39,23 @@ type Service struct {
 	// Packages are Nix expressions evaluated with nixpkgs in scope,
 	// e.g. "postgresql_16" or "python3.withPackages (p: [p.psycopg])".
 	Packages []string `toml:"packages" json:"packages"`
-	// Source is a local directory shipped to the host and mounted read-only at /app.
-	Source    string            `toml:"source,omitempty" json:"source,omitempty"`
-	Command   string            `toml:"command" json:"command"`
-	Setup     string            `toml:"setup,omitempty" json:"setup,omitempty"`
-	User      string            `toml:"user,omitempty" json:"user"`
-	Env       map[string]string `toml:"env,omitempty" json:"env,omitempty"`
-	Port      int               `toml:"port,omitempty" json:"port,omitempty"`
-	Health    string            `toml:"health,omitempty" json:"health,omitempty"`
-	Volumes   map[string]string `toml:"volumes,omitempty" json:"volumes,omitempty"`
-	DependsOn []string          `toml:"depends_on,omitempty" json:"depends_on,omitempty"`
-	Routes    []Route           `toml:"routes,omitempty" json:"routes,omitempty"`
-	CPU       string            `toml:"cpu,omitempty" json:"cpu,omitempty"`
-	Memory    string            `toml:"memory,omitempty" json:"memory,omitempty"`
+	// Source is a local directory shipped to the host and snapshotted at /app.
+	Source        string            `toml:"source,omitempty" json:"source,omitempty"`
+	Install       string            `toml:"install,omitempty" json:"install,omitempty"`
+	InstallInputs []string          `toml:"install_inputs,omitempty" json:"install_inputs,omitempty"`
+	Build         string            `toml:"build,omitempty" json:"build,omitempty"`
+	Command       string            `toml:"command" json:"command"`
+	Setup         string            `toml:"setup,omitempty" json:"setup,omitempty"`
+	User          string            `toml:"user,omitempty" json:"user"`
+	Env           map[string]string `toml:"env,omitempty" json:"env,omitempty"`
+	Secrets       map[string]string `toml:"secrets,omitempty" json:"secrets,omitempty"`
+	Port          int               `toml:"port,omitempty" json:"port,omitempty"`
+	Health        string            `toml:"health,omitempty" json:"health,omitempty"`
+	Volumes       map[string]string `toml:"volumes,omitempty" json:"volumes,omitempty"`
+	DependsOn     []string          `toml:"depends_on,omitempty" json:"depends_on,omitempty"`
+	Routes        []Route           `toml:"routes,omitempty" json:"routes,omitempty"`
+	CPU           string            `toml:"cpu,omitempty" json:"cpu,omitempty"`
+	Memory        string            `toml:"memory,omitempty" json:"memory,omitempty"`
 	// HealthTimeout is in seconds.
 	HealthTimeout int `toml:"health_timeout,omitempty" json:"health_timeout"`
 }
@@ -75,6 +88,16 @@ func Load(path string) (*Config, error) {
 		if svc.Source != "" && !filepath.IsAbs(svc.Source) {
 			svc.Source = filepath.Join(base, svc.Source)
 		}
+		if svc.Install != "" && len(svc.InstallInputs) == 0 && svc.Source != "" {
+			for _, candidate := range defaultInstallInputs {
+				if _, err := os.Stat(filepath.Join(svc.Source, candidate)); err == nil {
+					svc.InstallInputs = append(svc.InstallInputs, candidate)
+				}
+			}
+		}
+		if svc.Install != "" && len(svc.InstallInputs) == 0 {
+			return nil, errors.New("install_inputs: no known lockfile/manifest found; set install_inputs")
+		}
 	}
 	return &cfg, nil
 }
@@ -102,8 +125,8 @@ func (c *Config) applyDefaults() {
 }
 
 func (c *Config) Validate() error {
-	if !nameRe.MatchString(c.App) {
-		return fmt.Errorf("app %q must match %s", c.App, nameRe)
+	if err := ValidateAppName(c.App); err != nil {
+		return err
 	}
 	if len(c.Services) == 0 {
 		return fmt.Errorf("at least one [services.<name>] is required")
@@ -119,6 +142,30 @@ func (c *Config) Validate() error {
 		for _, dep := range svc.DependsOn {
 			if _, ok := c.Services[dep]; !ok {
 				return fmt.Errorf("service %q depends on unknown service %q", name, dep)
+			}
+		}
+		if (svc.Install != "" || len(svc.InstallInputs) > 0 || svc.Build != "") && svc.Source == "" {
+			return fmt.Errorf("service %q: install, install_inputs, and build require source", name)
+		}
+		for _, input := range svc.InstallInputs {
+			if err := ValidateInstallInput(input); err != nil {
+				return fmt.Errorf("service %q: install_inputs: %w", name, err)
+			}
+		}
+		for env := range svc.Env {
+			if !envNameRe.MatchString(env) {
+				return fmt.Errorf("service %q: environment variable %q is invalid", name, env)
+			}
+		}
+		for env, secret := range svc.Secrets {
+			if !envNameRe.MatchString(env) {
+				return fmt.Errorf("service %q: secret environment variable %q is invalid", name, env)
+			}
+			if !secretNameRe.MatchString(secret) {
+				return fmt.Errorf("service %q: secret name %q is invalid", name, secret)
+			}
+			if _, ok := svc.Env[env]; ok {
+				return fmt.Errorf("service %q: secret environment variable %q is also defined in env", name, env)
 			}
 		}
 		if len(svc.Routes) > 0 && svc.Port == 0 {
@@ -150,6 +197,35 @@ func (c *Config) Validate() error {
 	}
 	_, err := c.Order()
 	return err
+}
+
+func ValidateAppName(name string) error {
+	if !nameRe.MatchString(name) {
+		return fmt.Errorf("app %q must match %s", name, nameRe)
+	}
+	return nil
+}
+
+func ValidateInstallInput(input string) error {
+	if input == "" || filepath.IsAbs(input) {
+		return fmt.Errorf("%q must be a non-empty source-relative path", input)
+	}
+	for _, part := range strings.Split(filepath.ToSlash(input), "/") {
+		if part == ".." {
+			return fmt.Errorf("%q must not contain ..", input)
+		}
+	}
+	if strings.ContainsAny(input, "*?[]") {
+		return fmt.Errorf("%q must not contain globs", input)
+	}
+	return nil
+}
+
+func ValidateSecretName(name string) error {
+	if !secretNameRe.MatchString(name) {
+		return fmt.Errorf("secret name %q must match %s", name, secretNameRe)
+	}
+	return nil
 }
 
 // Order returns service names topologically sorted by depends_on (ties broken by name).
