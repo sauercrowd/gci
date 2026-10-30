@@ -195,7 +195,8 @@ func revision(cfg *config.Config, name, env, sourceHash string) string {
 		Svc    config.Service
 		Env    string
 		Source string
-	}{svc, env, sourceHash})
+		Net    string // bump to recreate containers when in-container networking changes
+	}{svc, env, sourceHash, "vip"})
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:])[:12]
 }
