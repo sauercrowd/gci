@@ -30,9 +30,9 @@ memory         = "1GiB"
 | --- | --- |
 | `packages` | Nix expressions evaluated with `nixpkgs` in scope. gci combines them with `cacert`, `coreutils`, and `bashInteractive` into one `buildEnv` on `PATH`. |
 | `source` | A local directory, relative to `gci.toml`, shipped to a release snapshot and used as the writable `/app` working directory. `.git`, `node_modules`, and `__pycache__` are skipped. |
-| `install` | Optional dependency-install command, such as `npm ci`. Requires `source`; runs once in a stopped dependency snapshot and never receives service `env` or secrets. |
+| `install` | Optional dependency-install command, such as `npm ci`. Requires `source`; runs once in a stopped dependency snapshot with `sh -e -c` and never receives service `env` or secrets. |
 | `install_inputs` | Source-relative files/directories used to key the dependency snapshot. Paths cannot be absolute, contain `..`, or use globs. Defaults to the known Node.js and Python manifest/lockfile names present at the source root. If none exist, set this explicitly. |
-| `build` | Optional build command run after the full source is copied into a stopped release builder. Requires `source`; receives `env` but not secrets. |
+| `build` | Optional build command run after the full source is copied into a stopped release builder with `sh -e -c`. Requires `source`; receives `env` but not secrets. |
 | `command` | **Required.** The main process, run under systemd as `gci-<name>.service` with `Restart=always`. |
 | `setup` | A shell script run before every start (`ExecStartPre`), for example first-boot initialisation. |
 | `user` | The user to run as. Default `gci`. It is created in the container, and volumes are owned by it. |

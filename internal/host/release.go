@@ -445,11 +445,7 @@ func baseBuildEnv(env, app, svc, user string) map[string]string {
 func runBuildCommand(ctx context.Context, w io.Writer, container, uid, gid string, vars map[string]string, command string) error {
 	buildCtx, cancel := context.WithTimeout(ctx, buildTimeout)
 	defer cancel()
-	args := []string{"exec", container, "--user", uid, "--group", gid, "--cwd", "/app"}
-	for _, key := range sortedKeys(vars) {
-		args = append(args, "--env", key+"="+vars[key])
-	}
-	args = append(args, "--", "sh", "-c", command)
+	args := buildCommandArgs(container, uid, gid, vars, command)
 	cmd := exec.CommandContext(buildCtx, "incus", args...)
 	cmd.Stdout, cmd.Stderr = w, w
 	if err := cmd.Run(); err != nil {
@@ -459,6 +455,14 @@ func runBuildCommand(ctx context.Context, w io.Writer, container, uid, gid strin
 		return fmt.Errorf("build command: %w", err)
 	}
 	return nil
+}
+
+func buildCommandArgs(container, uid, gid string, vars map[string]string, command string) []string {
+	args := []string{"exec", container, "--user", uid, "--group", gid, "--cwd", "/app"}
+	for _, key := range sortedKeys(vars) {
+		args = append(args, "--env", key+"="+vars[key])
+	}
+	return append(args, "--", "sh", "-e", "-c", command)
 }
 
 func ensureCacheVolume(ctx context.Context, hc *HostConfig, name string) error {
