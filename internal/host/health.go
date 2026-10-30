@@ -7,7 +7,6 @@ import (
 	"net"
 	"net/http"
 	"os/exec"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -212,30 +211,44 @@ func (w *cappedHealthWriter) String() string {
 }
 
 func sanitizeHealthOutput(output string, secrets map[string]string) string {
-	values := make([]string, 0, len(secrets))
-	for _, value := range secrets {
-		if value != "" {
-			values = append(values, value)
+	mask := make([]bool, len(output))
+	for _, secret := range secrets {
+		if secret == "" {
+			continue
 		}
-	}
-	sort.Slice(values, func(i, j int) bool { return len(values[i]) > len(values[j]) })
-	var sanitized strings.Builder
-	i := 0
-	for i < len(output) && i < maxHealthCommandOutput {
-		matched := ""
-		for _, value := range values {
-			if strings.HasPrefix(output[i:], value) {
-				matched = value
+		searchFrom := 0
+		for searchFrom < len(output) {
+			offset := strings.Index(output[searchFrom:], secret)
+			if offset < 0 {
 				break
 			}
+			start := searchFrom + offset
+			for i := start; i < start+len(secret); i++ {
+				mask[i] = true
+			}
+			searchFrom = start + 1
 		}
-		if matched != "" {
+	}
+
+	scanLimit := len(output)
+	if scanLimit > maxHealthCommandOutput {
+		scanLimit = maxHealthCommandOutput
+	}
+	var sanitized strings.Builder
+	i := 0
+	for i < scanLimit && sanitized.Len() < maxHealthCommandOutput {
+		if mask[i] {
+			if sanitized.Len()+len("[REDACTED]") > maxHealthCommandOutput {
+				break
+			}
 			sanitized.WriteString("[REDACTED]")
-			i += len(matched)
-		} else {
-			sanitized.WriteByte(output[i])
-			i++
+			for i < len(mask) && mask[i] {
+				i++
+			}
+			continue
 		}
+		sanitized.WriteByte(output[i])
+		i++
 	}
 	if i < len(output) {
 		sanitized.WriteString("…")

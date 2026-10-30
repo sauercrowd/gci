@@ -70,17 +70,45 @@ func TestSanitizeHealthOutputRedactsSecretAcrossRawOutputLimit(t *testing.T) {
 	assertNo16ByteSecretSubstring(t, output, secret)
 }
 
+func TestSanitizeHealthOutputRedactsOverlappingSecrets(t *testing.T) {
+	secretA := "abcXYZ"
+	secretB := "XYZ123456789"
+	output := sanitizeHealthOutput("abcXYZ123456789", map[string]string{"A": secretA, "B": secretB})
+	if !strings.Contains(output, "[REDACTED]") {
+		t.Fatalf("sanitized output %q does not include [REDACTED]", output)
+	}
+	assertNoSecretSubstring(t, output, secretA, 6)
+	assertNoSecretSubstring(t, output, secretB, 6)
+}
+
+func TestSanitizeHealthOutputCapsInflatedRedactions(t *testing.T) {
+	raw := strings.Repeat("ab", maxHealthCommandOutput)
+	w := &cappedHealthWriter{limit: maxHealthCommandOutput + maxSecretSize}
+	if _, err := w.Write([]byte(raw)); err != nil {
+		t.Fatal(err)
+	}
+	output := sanitizeHealthOutput(w.String(), map[string]string{"TOKEN": "a"})
+	if len(output) > maxHealthCommandOutput+len("…") {
+		t.Fatalf("sanitized output length = %d, want at most %d", len(output), maxHealthCommandOutput+len("…"))
+	}
+}
+
 func assertNo16ByteSecretSubstring(t *testing.T, output, secret string) {
 	t.Helper()
+	assertNoSecretSubstring(t, output, secret, 16)
+}
+
+func assertNoSecretSubstring(t *testing.T, output, secret string, width int) {
+	t.Helper()
 	seen := make(map[string]struct{})
-	for i := 0; i+16 <= len(secret); i++ {
-		substring := secret[i : i+16]
+	for i := 0; i+width <= len(secret); i++ {
+		substring := secret[i : i+width]
 		if _, ok := seen[substring]; ok {
 			continue
 		}
 		seen[substring] = struct{}{}
 		if strings.Contains(output, substring) {
-			t.Fatalf("sanitized output contains a 16-byte substring of the secret: %q", output)
+			t.Fatalf("sanitized output contains a %d-byte substring of the secret: %q", width, output)
 		}
 	}
 }
