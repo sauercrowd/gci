@@ -40,8 +40,12 @@ func Bootstrap(ctx context.Context, w io.Writer, opts BootstrapOptions) error {
 	if err != nil {
 		return fmt.Errorf("subnet: %w", err)
 	}
-	if _, err := netip.ParsePrefix(opts.VIPRange); err != nil {
+	vips, err := netip.ParsePrefix(opts.VIPRange)
+	if err != nil {
 		return fmt.Errorf("vip range: %w", err)
+	}
+	if vips.Overlaps(gw.Masked()) {
+		return fmt.Errorf("vip range %s overlaps subnet %s", opts.VIPRange, opts.Subnet)
 	}
 	hc := &HostConfig{EnvoyIP: gw.Addr().Next().String(), VIPRange: opts.VIPRange}
 	if opts.HTTPPort == 0 {
