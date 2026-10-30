@@ -114,14 +114,16 @@ func healthScript(command string) string {
 func waitHealthCommand(ctx context.Context, container, user string, hasSource bool, deadline time.Time, timeout time.Duration, secrets map[string]string) error {
 	var lastErr error
 	var lastOutput string
+	attempt := 0
 	for time.Now().Before(deadline) {
+		attempt++
 		remaining := time.Until(deadline)
 		attemptTimeout := healthCommandAttemptTimeout
 		if remaining < attemptTimeout {
 			attemptTimeout = remaining
 		}
 		attemptCtx, cancel := context.WithTimeout(ctx, attemptTimeout)
-		output, err := runHealthCommand(attemptCtx, container, user, hasSource)
+		output, err := runHealthCommand(attemptCtx, container, user, hasSource, attempt, attemptTimeout)
 		ctxErr := ctx.Err()
 		cancel()
 		if err == nil {
@@ -149,19 +151,38 @@ func waitHealthCommand(ctx context.Context, container, user string, hasSource bo
 	return fmt.Errorf("health command timed out after %s (last attempt: %v)%s", timeout, lastErr, healthOutputDetail(lastOutput))
 }
 
-func runHealthCommand(ctx context.Context, container, user string, hasSource bool) (string, error) {
-	args := []string{"exec", container, "--", "systemd-run", "--wait", "--pipe", "--quiet", "--collect",
-		"-p", "User=" + user, "-p", "EnvironmentFile=/etc/gci/service.env"}
-	if hasSource {
-		args = append(args, "-p", "WorkingDirectory=/app")
-	}
-	args = append(args, "/bin/sh", "/etc/gci/health.sh")
+func runHealthCommand(ctx context.Context, container, user string, hasSource bool, attempt int, attemptTimeout time.Duration) (string, error) {
+	args, unit := healthCommandArgs(container, user, hasSource, attempt, attemptTimeout)
 	cmd := exec.CommandContext(ctx, "incus", args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	err := cmd.Run()
+	if err != nil {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		_, _ = incus(stopCtx, "exec", container, "--", "systemctl", "stop", unit)
+		cancel()
+	}
 	return stdout.String() + stderr.String(), err
+}
+
+func healthCommandArgs(container, user string, hasSource bool, attempt int, attemptTimeout time.Duration) ([]string, string) {
+	unit := fmt.Sprintf("gci-health-%d", attempt)
+	runtimeSeconds := int64(attemptTimeout / time.Second)
+	if attemptTimeout%time.Second != 0 {
+		runtimeSeconds++
+	}
+	if runtimeSeconds < 1 {
+		runtimeSeconds = 1
+	}
+	args := []string{"exec", container, "--", "systemd-run", "--unit", unit, "--wait", "--pipe", "--quiet", "--collect",
+		"-p", "RuntimeMaxSec=" + strconv.FormatInt(runtimeSeconds, 10),
+		"-p", "User=" + user, "-p", "EnvironmentFile=/etc/gci/service.env"}
+	if hasSource {
+		args = append(args, "-p", "WorkingDirectory=/app")
+	}
+	args = append(args, "/bin/sh", "/etc/gci/health.sh")
+	return args, unit
 }
 
 func sanitizeHealthOutput(output string, secrets map[string]string) string {
