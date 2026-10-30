@@ -154,7 +154,7 @@ func waitHealthCommand(ctx context.Context, container, user string, hasSource bo
 
 func runHealthCommand(ctx context.Context, container, user string, hasSource bool, attempt int, attemptTimeout time.Duration) (string, error) {
 	args, unit := healthCommandArgs(container, user, hasSource, attempt, attemptTimeout)
-	output := &cappedHealthWriter{limit: maxHealthCommandOutput + 1}
+	output := &cappedHealthWriter{limit: maxHealthCommandOutput + maxSecretSize}
 	cmd := exec.CommandContext(ctx, "incus", args...)
 	cmd.Stdout = output
 	cmd.Stderr = output
