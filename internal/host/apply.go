@@ -153,6 +153,7 @@ func Apply(ctx context.Context, w io.Writer, plan Plan) error {
 		return err
 	}
 	resolved := make(map[string]map[string]string, len(order))
+	digests := make(map[string]string, len(order))
 	var missing []string
 	for _, name := range order {
 		svc := cfg.Services[name]
@@ -167,7 +168,12 @@ func Apply(ctx context.Context, w io.Writer, plan Plan) error {
 			}
 			return fmt.Errorf("%s: %w", name, err)
 		}
+		digest, err := secretDigest(values)
+		if err != nil {
+			return fmt.Errorf("%s: secret digest: %w", name, err)
+		}
 		resolved[name] = values
+		digests[name] = digest
 	}
 	if len(missing) != 0 {
 		return fmt.Errorf("missing secrets: %s", strings.Join(missing, "; "))
@@ -195,7 +201,7 @@ func Apply(ctx context.Context, w io.Writer, plan Plan) error {
 			return fmt.Errorf("%s: nix: %w", name, err)
 		}
 		fmt.Fprintf(w, "==> %s: env %s (%s)\n", name, filepath.Base(env), time.Since(t).Round(time.Millisecond))
-		item := preparedService{env: env, secrets: resolved[name]}
+		item := preparedService{env: env, secrets: resolved[name], secretDigest: digests[name]}
 		if svc.Source != "" {
 			item.release, err = prepareRelease(ctx, w, hc, cfg, name, env, baseFP, plan.Sources[name], st)
 			if err != nil {
@@ -296,7 +302,7 @@ func applyService(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.
 	if prepared.release != nil {
 		releaseKey = prepared.release.Key
 	}
-	rev := revisionWithSecrets(cfg, name, env, releaseKey, secretDigest(prepared.secrets))
+	rev := revisionWithSecrets(cfg, name, env, releaseKey, prepared.secretDigest)
 	cur := st.Services[name]
 	if cur != nil && cur.Rev == rev {
 		inst, _ := getInstance(ctx, cur.Container)

@@ -1,6 +1,8 @@
 package host
 
 import (
+	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -12,7 +14,9 @@ import (
 	"github.com/sauercrowd/gci/internal/config"
 )
 
-const secretRoot = stateRoot + "/secrets"
+var secretRoot = stateRoot + "/secrets"
+
+const secretDigestKeyName = ".digest-key"
 const maxSecretSize = 64 * 1024
 
 func secretPath(app, name string) string {
@@ -106,13 +110,88 @@ func resolveSecrets(app string, svc *config.Service) (map[string]string, error) 
 	return values, nil
 }
 
-func secretDigest(values map[string]string) string {
-	h := sha256.New()
+func secretDigest(values map[string]string) (string, error) {
+	if len(values) == 0 {
+		sum := sha256.Sum256(nil)
+		return hex.EncodeToString(sum[:]), nil
+	}
+	key, err := secretDigestKey()
+	if err != nil {
+		return "", err
+	}
+	h := hmac.New(sha256.New, key)
 	for _, env := range sortedKeys(values) {
 		hashString(h, env)
 		hashString(h, values[env])
 	}
-	return hex.EncodeToString(h.Sum(nil))
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+func secretDigestKey() ([]byte, error) {
+	if err := os.MkdirAll(secretRoot, 0o700); err != nil {
+		return nil, err
+	}
+	if err := os.Chmod(secretRoot, 0o700); err != nil {
+		return nil, err
+	}
+	path := filepath.Join(secretRoot, secretDigestKeyName)
+	key, err := readSecretDigestKey(path)
+	if err == nil {
+		return key, nil
+	}
+	if !os.IsNotExist(err) {
+		return nil, err
+	}
+	key = make([]byte, sha256.Size)
+	if _, err := rand.Read(key); err != nil {
+		return nil, err
+	}
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if os.IsExist(err) {
+		return readSecretDigestKey(path)
+	}
+	if err != nil {
+		return nil, err
+	}
+	n, writeErr := file.Write(key)
+	if writeErr == nil && n != len(key) {
+		writeErr = fmt.Errorf("short write creating secret digest key")
+	}
+	if writeErr == nil {
+		writeErr = file.Sync()
+	}
+	if chmodErr := file.Chmod(0o600); writeErr == nil {
+		writeErr = chmodErr
+	}
+	if closeErr := file.Close(); writeErr == nil {
+		writeErr = closeErr
+	}
+	if writeErr != nil {
+		_ = os.Remove(path)
+		return nil, writeErr
+	}
+	return key, nil
+}
+
+func readSecretDigestKey(path string) ([]byte, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("secret digest key must be a regular file")
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		return nil, err
+	}
+	key, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if len(key) != sha256.Size {
+		return nil, fmt.Errorf("secret digest key must be %d bytes", sha256.Size)
+	}
+	return key, nil
 }
 
 func uniqueStrings(values []string) []string {
