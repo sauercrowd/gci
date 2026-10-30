@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -153,17 +154,17 @@ func waitHealthCommand(ctx context.Context, container, user string, hasSource bo
 
 func runHealthCommand(ctx context.Context, container, user string, hasSource bool, attempt int, attemptTimeout time.Duration) (string, error) {
 	args, unit := healthCommandArgs(container, user, hasSource, attempt, attemptTimeout)
+	output := &cappedHealthWriter{limit: maxHealthCommandOutput + 1}
 	cmd := exec.CommandContext(ctx, "incus", args...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	cmd.Stdout = output
+	cmd.Stderr = output
 	err := cmd.Run()
 	if err != nil {
 		stopCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		_, _ = incus(stopCtx, "exec", container, "--", "systemctl", "stop", unit)
 		cancel()
 	}
-	return stdout.String() + stderr.String(), err
+	return output.String(), err
 }
 
 func healthCommandArgs(container, user string, hasSource bool, attempt int, attemptTimeout time.Duration) ([]string, string) {
@@ -183,6 +184,31 @@ func healthCommandArgs(container, user string, hasSource bool, attempt int, atte
 	}
 	args = append(args, "/bin/sh", "/etc/gci/health.sh")
 	return args, unit
+}
+
+type cappedHealthWriter struct {
+	mu    sync.Mutex
+	limit int
+	buf   bytes.Buffer
+}
+
+func (w *cappedHealthWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	remaining := w.limit - w.buf.Len()
+	if remaining > len(p) {
+		remaining = len(p)
+	}
+	if remaining > 0 {
+		_, _ = w.buf.Write(p[:remaining])
+	}
+	return len(p), nil
+}
+
+func (w *cappedHealthWriter) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.String()
 }
 
 func sanitizeHealthOutput(output string, secrets map[string]string) string {
