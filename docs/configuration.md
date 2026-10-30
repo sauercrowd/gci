@@ -40,11 +40,16 @@ memory         = "1GiB"
 | `secrets` | `ENV_VAR = "secret-name"` mappings. Names use lowercase letters, digits, `.`, `_`, and `-`; environment variable names follow shell identifier syntax. A key cannot appear in both `env` and `secrets`. Values are read from `gci secret set` and injected only when the service container is activated. |
 | `port` | The port the service listens on. Required for `routes`. |
 | `health` | An HTTP path that must return 2xx/3xx. If only `port` is set, the check is a TCP connect. With neither, the check is that the systemd unit is active. |
+| `health_command` | Optional shell command run during deployment after the HTTP, TCP, or systemd-active probe passes. It runs as the service user, with the service environment (including secrets); it may be set without `port` or `health`. Only non-whitespace values are required. |
 | `health_timeout` | Seconds to wait for health. Default 120. A unit that restarts 5 times fails the deploy early. |
 | `volumes` | `name = "/path"` pairs. Each is an Incus custom volume named `gci-<app>-<name>`, and it survives redeploys and `gci rm`. A service with volumes is **stateful**: it is stopped, then started, rather than rolled. |
 | `depends_on` | Services that are deployed first. Cycles are rejected. |
 | `routes` | Envoy routes. `host` defaults to `*` and `prefix` to `/`. |
 | `cpu`, `memory` | Incus `limits.cpu` and `limits.memory`. |
+
+## Health checks
+
+The HTTP, TCP, or systemd-active probe runs first. If `health_command` is set, gci then runs it inside the new container before promoting traffic, retrying once per second until it succeeds or the shared `health_timeout` expires. Each command attempt is capped at 10 seconds. The command runs only during deployment; Envoy does not run it, and continuous health-command checks are not supported.
 
 ## Release snapshots
 

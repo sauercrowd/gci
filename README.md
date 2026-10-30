@@ -53,7 +53,7 @@ See [`examples/platform`](examples/platform) for the full example, and [docs](do
 
 1. The client packs each `source` directory into a deterministic tarball and uploads it only if its hash is new on the host.
 2. Before changing running services, the host checks secrets, realizes each Nix `buildEnv`, installs dependencies into a stopped `deps` snapshot keyed by the lockfile inputs, and creates a stopped `release` snapshot keyed by the source and build.
-3. Activation copies a release into a fresh service container, writes runtime configuration and secrets, starts it, and waits for health. Secrets are never present in dependency or release snapshots.
+3. Activation copies a release into a fresh service container, writes runtime configuration and secrets, starts it, and waits for the configured probe and optional deploy-time `health_command`. Secrets are never present in dependency or release snapshots.
 4. Envoy switches to a healthy replacement before the old stateless service container is deleted. Stateful services stop the old container and reuse its persistent volume.
 5. Each service retains its current release and the two newest others. Release roots keep the corresponding Nix closures available for reuse.
 

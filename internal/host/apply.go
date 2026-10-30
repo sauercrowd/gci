@@ -425,6 +425,9 @@ func applyService(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.
 		files["/etc/gci/setup.sh"] = "#!/bin/sh\nset -e\n" + svc.Setup + "\n"
 		pre = append(pre, "/bin/sh /etc/gci/setup.sh")
 	}
+	if svc.HealthCommand != "" {
+		files["/etc/gci/health.sh"] = healthScript(svc.HealthCommand)
+	}
 	workdir := envVars["HOME"]
 	if svc.Source != "" {
 		workdir = "/app"
@@ -452,6 +455,10 @@ func applyService(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.
 		return fail(err)
 	}
 
+	timeout := time.Duration(svc.HealthTimeout) * time.Second
+	deadline := time.Now().Add(timeout)
+	healthCtx, cancelHealth := context.WithDeadline(ctx, deadline)
+	defer cancelHealth()
 	var p probe
 	switch {
 	case svc.Health != "" && svc.Port != 0:
@@ -459,11 +466,16 @@ func applyService(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.
 	case svc.Port != 0:
 		p = tcpProbe(fmt.Sprintf("%s:%d", ip, svc.Port))
 	default:
-		p = unitActiveProbe(ctx, container, unitName(name))
+		p = unitActiveProbe(healthCtx, container, unitName(name))
 	}
 	logf("waiting for health (%s)", ip)
-	if err := waitHealthy(ctx, container, unitName(name), p, time.Duration(svc.HealthTimeout)*time.Second); err != nil {
+	if err := waitHealthyUntil(healthCtx, container, unitName(name), p, deadline, timeout); err != nil {
 		return fail(err)
+	}
+	if svc.HealthCommand != "" {
+		if err := waitHealthCommand(healthCtx, container, svc.User, svc.Source != "", deadline, timeout, prepared.secrets); err != nil {
+			return fail(err)
+		}
 	}
 
 	// Promote: GC-root the env, switch traffic, then retire the old container.

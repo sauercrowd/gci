@@ -57,28 +57,44 @@ command = "cache"
 
 func TestValidate(t *testing.T) {
 	cases := map[string]string{
-		"must match":            `app = "Bad_Name"` + "\n[services.a]\ncommand = \"x\"",
-		"command is required":   `app = "a"` + "\n[services.a]\nport = 1",
-		"require source":        `app = "a"` + "\n[services.a]\ncommand = \"x\"\ninstall = \"npm ci\"",
-		"install_inputs":        `app = "a"` + "\n[services.a]\ncommand = \"x\"\nsource = \"app\"\ninstall = \"npm ci\"\ninstall_inputs = [\"../package.json\"]",
-		"globs":                 `app = "a"` + "\n[services.a]\ncommand = \"x\"\nsource = \"app\"\ninstall = \"npm ci\"\ninstall_inputs = [\"package*.json\"]",
-		"secret environment":    `app = "a"` + "\n[services.a]\ncommand = \"x\"\nsecrets = { \"bad-env\" = \"valid\" }",
-		"environment variable":  `app = "a"` + "\n[services.a]\ncommand = \"x\"\nenv = { \"bad-env\" = \"value\" }",
-		"secret name":           `app = "a"` + "\n[services.a]\ncommand = \"x\"\nsecrets = { TOKEN = \"Invalid_Name\" }",
-		"also defined in env":   `app = "a"` + "\n[services.a]\ncommand = \"x\"\nenv = { TOKEN = \"x\" }\nsecrets = { TOKEN = \"token\" }",
-		"build require source":  `app = "a"` + "\n[services.a]\ncommand = \"x\"\nbuild = \"npm run build\"",
-		"unknown service":       `app = "a"` + "\n[services.a]\ncommand = \"x\"\ndepends_on = [\"b\"]",
-		"cycle":                 `app = "a"` + "\n[services.a]\ncommand = \"x\"\ndepends_on = [\"b\"]\n[services.b]\ncommand = \"x\"\ndepends_on = [\"a\"]",
-		"routes require port":   `app = "a"` + "\n[services.a]\ncommand = \"x\"\nroutes = [{}]",
-		"used by both":          `app = "a"` + "\n[services.a]\ncommand = \"x\"\nvolumes = { v = \"/v\" }\n[services.b]\ncommand = \"x\"\nvolumes = { v = \"/w\" }",
-		"health requires port":  `app = "a"` + "\n[services.a]\ncommand = \"x\"\nhealth = \"/h\"",
-		"missing in the target": `app = "a"` + "\n[services.a]\ncommand = \"x\"\nimage = \"nginx\"",
+		"must match":                       `app = "Bad_Name"` + "\n[services.a]\ncommand = \"x\"",
+		"command is required":              `app = "a"` + "\n[services.a]\nport = 1",
+		"require source":                   `app = "a"` + "\n[services.a]\ncommand = \"x\"\ninstall = \"npm ci\"",
+		"install_inputs":                   `app = "a"` + "\n[services.a]\ncommand = \"x\"\nsource = \"app\"\ninstall = \"npm ci\"\ninstall_inputs = [\"../package.json\"]",
+		"globs":                            `app = "a"` + "\n[services.a]\ncommand = \"x\"\nsource = \"app\"\ninstall = \"npm ci\"\ninstall_inputs = [\"package*.json\"]",
+		"secret environment":               `app = "a"` + "\n[services.a]\ncommand = \"x\"\nsecrets = { \"bad-env\" = \"valid\" }",
+		"environment variable":             `app = "a"` + "\n[services.a]\ncommand = \"x\"\nenv = { \"bad-env\" = \"value\" }",
+		"secret name":                      `app = "a"` + "\n[services.a]\ncommand = \"x\"\nsecrets = { TOKEN = \"Invalid_Name\" }",
+		"also defined in env":              `app = "a"` + "\n[services.a]\ncommand = \"x\"\nenv = { TOKEN = \"x\" }\nsecrets = { TOKEN = \"token\" }",
+		"build require source":             `app = "a"` + "\n[services.a]\ncommand = \"x\"\nbuild = \"npm run build\"",
+		"unknown service":                  `app = "a"` + "\n[services.a]\ncommand = \"x\"\ndepends_on = [\"b\"]",
+		"cycle":                            `app = "a"` + "\n[services.a]\ncommand = \"x\"\ndepends_on = [\"b\"]\n[services.b]\ncommand = \"x\"\ndepends_on = [\"a\"]",
+		"routes require port":              `app = "a"` + "\n[services.a]\ncommand = \"x\"\nroutes = [{}]",
+		"used by both":                     `app = "a"` + "\n[services.a]\ncommand = \"x\"\nvolumes = { v = \"/v\" }\n[services.b]\ncommand = \"x\"\nvolumes = { v = \"/w\" }",
+		"health requires port":             `app = "a"` + "\n[services.a]\ncommand = \"x\"\nhealth = \"/h\"",
+		"health_command must not be blank": `app = "a"` + "\n[services.a]\ncommand = \"x\"\nhealth_command = \"   \"",
+		"missing in the target":            `app = "a"` + "\n[services.a]\ncommand = \"x\"\nimage = \"nginx\"",
 	}
 	for want, content := range cases {
 		_, err := Load(write(t, content))
 		if err == nil || !strings.Contains(strings.ToLower(err.Error()), want) {
 			t.Errorf("%q: got %v", want, err)
 		}
+	}
+}
+
+func TestHealthCommandAllowsPortlessService(t *testing.T) {
+	cfg, err := Load(write(t, `
+app = "demo"
+[services.check]
+command = "sleep infinity"
+health_command = "test -n \"$GCI_APP\""
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Services["check"].HealthCommand; got != `test -n "$GCI_APP"` {
+		t.Fatalf("health_command = %q", got)
 	}
 }
 
