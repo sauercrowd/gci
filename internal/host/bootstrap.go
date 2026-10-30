@@ -233,7 +233,12 @@ func ensureBaseImage(ctx context.Context, w io.Writer) error {
 	script := `set -e
 useradd -m -u 1000 -s /bin/bash gci
 systemctl mask apt-daily.timer apt-daily-upgrade.timer >/dev/null 2>&1 || true
-mkdir -p /etc/gci /app`
+mkdir -p /etc/gci /app
+# gci relies on curl (Envoy admin checks) and systemd-resolved (.internal search domain).
+dpkg -s curl systemd-resolved >/dev/null 2>&1 || {
+  apt-get update -qq
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq curl systemd-resolved
+}`
 	if _, err := incus(ctx, "exec", tmp, "--", "sh", "-c", script); err != nil {
 		return err
 	}

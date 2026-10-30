@@ -360,7 +360,7 @@ func applyService(ctx context.Context, w io.Writer, cfg *config.Config, name, so
 		}
 	}
 	if _, err := incus(ctx, "exec", container, "--", "sh", "-c",
-		"systemctl restart systemd-resolved && systemctl daemon-reload && systemctl enable --now "+unitName(name)); err != nil {
+		"systemctl try-restart systemd-resolved; systemctl daemon-reload && systemctl enable --now "+unitName(name)); err != nil {
 		return fail(err)
 	}
 
