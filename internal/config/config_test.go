@@ -18,10 +18,11 @@ func write(t *testing.T, content string) string {
 }
 
 func TestLoadDefaultsAndOrder(t *testing.T) {
-	cfg, err := Load(write(t, `
+	p := write(t, `
 app = "demo"
 [services.web]
 command = "run"
+source = "./app"
 port = 8080
 depends_on = ["db", "cache"]
 routes = [{}]
@@ -30,24 +31,25 @@ command = "db"
 volumes = { data = "/data" }
 [services.cache]
 command = "cache"
-`))
+`)
+	cfg, err := Load(p)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cfg.Nixpkgs != DefaultNixpkgs {
-		t.Fatal("nixpkgs default not applied")
+		t.Errorf("nixpkgs default not applied")
 	}
 	web := cfg.Services["web"]
 	if web.User != "gci" || web.Reuse != "dependencies" || web.Routes[0] != (Route{Host: "*", Prefix: "/"}) {
-		t.Fatalf("defaults not applied: %+v", web)
+		t.Errorf("defaults not applied: %+v", web)
+	}
+	if web.Source != filepath.Join(filepath.Dir(p), "app") {
+		t.Errorf("source not resolved relative to config: %s", web.Source)
 	}
 	if !cfg.Services["db"].Stateful() || web.Stateful() {
-		t.Fatal("stateful detection is wrong")
+		t.Errorf("stateful detection wrong")
 	}
-	order, err := cfg.Order()
-	if err != nil {
-		t.Fatal(err)
-	}
+	order, _ := cfg.Order()
 	if want := []string{"cache", "db", "web"}; !reflect.DeepEqual(order, want) {
 		t.Errorf("order = %v, want %v", order, want)
 	}
@@ -63,8 +65,12 @@ func TestValidate(t *testing.T) {
 		"used by both":                     `app = "a"` + "\n[services.a]\ncommand = \"x\"\nvolumes = { v = \"/v\" }\n[services.b]\ncommand = \"x\"\nvolumes = { v = \"/w\" }",
 		"health requires port":             `app = "a"` + "\n[services.a]\ncommand = \"x\"\nhealth = \"/h\"",
 		"environment variable":             `app = "a"` + "\n[services.a]\ncommand = \"x\"\nenv = { \"bad-env\" = \"value\" }",
+		"secret environment":               `app = "a"` + "\n[services.a]\ncommand = \"x\"\nsecrets = { \"bad-env\" = \"valid\" }",
 		"reuse must be":                    `app = "a"` + "\n[services.a]\ncommand = \"x\"\nreuse = \"lockfile\"",
 		"install and build require source": `app = "a"` + "\n[services.a]\ncommand = \"x\"\ninstall = \"npm install\"",
+		"secret name":                      `app = "a"` + "\n[services.a]\ncommand = \"x\"\nsecrets = { TOKEN = \"Invalid_Name\" }",
+		"also defined in env":              `app = "a"` + "\n[services.a]\ncommand = \"x\"\nenv = { TOKEN = \"x\" }\nsecrets = { TOKEN = \"token\" }",
+		"build require source":             `app = "a"` + "\n[services.a]\ncommand = \"x\"\nbuild = \"npm run build\"",
 	}
 	for want, content := range cases {
 		_, err := Load(write(t, content))
@@ -92,25 +98,16 @@ build = "npm run build"
 	}
 }
 
-func TestSecretConfigValidation(t *testing.T) {
-	_, err := Load(write(t, `
-app = "demo"
-[services.web]
-command = "server"
-secrets = { "bad-env" = "token" }
-`))
-	if err == nil || !strings.Contains(err.Error(), "secret environment variable") {
-		t.Fatalf("invalid secret environment error = %v", err)
+func TestValidateSecretName(t *testing.T) {
+	for _, name := range []string{"ok", "secret.1", "secret-name_2"} {
+		if err := ValidateSecretName(name); err != nil {
+			t.Errorf("%q: %v", name, err)
+		}
 	}
-	_, err = Load(write(t, `
-app = "demo"
-[services.web]
-command = "server"
-env = { TOKEN = "plain" }
-secrets = { TOKEN = "token" }
-`))
-	if err == nil || !strings.Contains(err.Error(), "also defined in env") {
-		t.Fatalf("duplicate secret environment error = %v", err)
+	for _, name := range []string{"", "Upper", "has space", strings.Repeat("a", 64), "-leading"} {
+		if err := ValidateSecretName(name); err == nil {
+			t.Errorf("%q unexpectedly valid", name)
+		}
 	}
 }
 

@@ -137,6 +137,11 @@ func (c *Config) Validate() error {
 		if (svc.Install != "" || svc.Build != "") && svc.Source == "" {
 			return fmt.Errorf("service %q: install and build require source", name)
 		}
+		for env := range svc.Env {
+			if !envNameRe.MatchString(env) {
+				return fmt.Errorf("service %q: environment variable %q is invalid", name, env)
+			}
+		}
 		for env, secret := range svc.Secrets {
 			if !envNameRe.MatchString(env) {
 				return fmt.Errorf("service %q: secret environment variable %q is invalid", name, env)
@@ -146,11 +151,6 @@ func (c *Config) Validate() error {
 			}
 			if _, ok := svc.Env[env]; ok {
 				return fmt.Errorf("service %q: secret environment variable %q is also defined in env", name, env)
-			}
-		}
-		for env := range svc.Env {
-			if !envNameRe.MatchString(env) {
-				return fmt.Errorf("service %q: environment variable %q is invalid", name, env)
 			}
 		}
 		if len(svc.Routes) > 0 && svc.Port == 0 {
