@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -40,7 +41,7 @@ command = "cache"
 		t.Errorf("nixpkgs default not applied")
 	}
 	web := cfg.Services["web"]
-	if web.User != "gci" || web.Routes[0] != (Route{Host: "*", Prefix: "/"}) {
+	if web.User != "gci" || web.Routes[0] != (Route{Host: "*", Prefix: "/", TLS: "self-signed"}) {
 		t.Errorf("defaults not applied: %+v", web)
 	}
 	if web.Source != filepath.Join(filepath.Dir(p), "app") {
@@ -95,6 +96,77 @@ health_command = "test -n \"$GCI_APP\""
 	}
 	if got := cfg.Services["check"].HealthCommand; got != `test -n "$GCI_APP"` {
 		t.Fatalf("health_command = %q", got)
+	}
+}
+
+func TestRouteTLSDefaultsByHostKind(t *testing.T) {
+	hosts := map[string]string{
+		"*":               "self-signed",
+		"*.example.com":   "self-signed",
+		"localhost":       "self-signed",
+		"api.localhost":   "self-signed",
+		"127.0.0.1":       "self-signed",
+		"[2001:db8::1]":   "self-signed",
+		"example.com":     "acme",
+		"api.example.com": "acme",
+	}
+	var content strings.Builder
+	content.WriteString("app = \"demo\"\n")
+	for i, host := range sortedHostNames(hosts) {
+		content.WriteString("[services.s" + string(rune('a'+i)) + "]\n")
+		content.WriteString("command = \"run\"\nport = 8080\nroutes = [{ host = \"" + host + "\" }]\n")
+	}
+	cfg, err := Load(write(t, content.String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, host := range sortedHostNames(hosts) {
+		if got, want := cfg.Services["s"+string(rune('a'+i))].Routes[0].TLS, hosts[host]; got != want {
+			t.Errorf("%s TLS = %q, want %q", host, got, want)
+		}
+	}
+}
+
+func sortedHostNames(m map[string]string) []string {
+	names := make([]string, 0, len(m))
+	for name := range m {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func TestRouteTLSValidation(t *testing.T) {
+	cases := map[string]string{
+		"unknown tls mode":            `app = "demo"` + "\n[services.web]\ncommand = \"run\"\nport = 8080\nroutes = [{ host = \"example.com\", tls = \"magic\" }]",
+		"wildcard":                    `app = "demo"` + "\n[services.web]\ncommand = \"run\"\nport = 8080\nroutes = [{ host = \"*.example.com\", tls = \"acme\" }]",
+		"localhost":                   `app = "demo"` + "\n[services.web]\ncommand = \"run\"\nport = 8080\nroutes = [{ host = \"localhost\", tls = \"acme\" }]",
+		"IP":                          `app = "demo"` + "\n[services.web]\ncommand = \"run\"\nport = 8080\nroutes = [{ host = \"127.0.0.1\", tls = \"acme\" }]",
+		"requires both cert and key":  `app = "demo"` + "\n[services.web]\ncommand = \"run\"\nport = 8080\nroutes = [{ host = \"example.com\", tls = \"custom\", cert = \"leaf\" }]",
+		"cert and key are only valid": `app = "demo"` + "\n[services.web]\ncommand = \"run\"\nport = 8080\nroutes = [{ host = \"example.com\", cert = \"leaf\", key = \"private\" }]",
+		"secret name":                 `app = "demo"` + "\n[services.web]\ncommand = \"run\"\nport = 8080\nroutes = [{ host = \"example.com\", tls = \"custom\", cert = \"Leaf\", key = \"private\" }]",
+		"inconsistent tls":            `app = "demo"` + "\n[services.web]\ncommand = \"run\"\nport = 8080\nroutes = [{ host = \"example.com\", prefix = \"/\", tls = \"acme\" }, { host = \"example.com\", prefix = \"/api\", tls = \"off\" }]",
+		"already used by app":         `app = "demo"` + "\n[services.web]\ncommand = \"run\"\nport = 8080\nroutes = [{ host = \"example.com\" }]\n[services.api]\ncommand = \"run\"\nport = 8081\nroutes = [{ host = \"example.com\" }]",
+	}
+	for want, content := range cases {
+		_, err := Load(write(t, content))
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%q: got %v", want, err)
+		}
+	}
+}
+
+func TestCustomRouteRequiresBothSecretNames(t *testing.T) {
+	for _, route := range []string{
+		`{ host = "example.com", tls = "custom" }`,
+		`{ host = "example.com", tls = "custom", cert = "leaf" }`,
+		`{ host = "example.com", tls = "custom", key = "private" }`,
+	} {
+		content := "app = \"demo\"\n[services.web]\ncommand = \"run\"\nport = 8080\nroutes = [" + route + "]\n"
+		_, err := Load(write(t, content))
+		if err == nil || !strings.Contains(err.Error(), "requires both cert and key") {
+			t.Errorf("%s: got %v", route, err)
+		}
 	}
 }
 
