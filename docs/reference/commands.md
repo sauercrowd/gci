@@ -7,9 +7,9 @@ Global flags: `-c/--config` (default `gci.toml`) and `-s/--server` (default: `se
 | `gci init [--app name]` | Write a commented starter `gci.toml` (or the `-c` path) locally. The app name defaults to the directory name; an existing file is never overwritten. |
 | `gci server add <name> --host h[:port] [-u user] [-i key]` | Register an SSH host in `~/.gci/servers.toml`. Use `--local` to target this machine directly. |
 | `gci server ls` / `gci server rm <name>` | List or remove registered hosts. |
-| `gci bootstrap [--http-port 80] [--subnet 10.77.0.1/24] [--vip-range 10.77.1.0/24] [--storage-size 50GiB]` | Prepare a host once, including the btrfs-backed `gci` storage pool (see [Installation](/installation/)). |
+| `gci bootstrap [--http-port 80] [--https-port 443] [--subnet 10.77.0.1/24] [--vip-range 10.77.1.0/24] [--storage-size 50GiB] [--acme-email EMAIL] [--acme-directory URL] [--acme-ca-bundle PATH]` | Prepare a host once, including the btrfs-backed `gci` storage pool, HTTPS listener, and certificate-renewal timer (see [Installation](/installation/)). |
 | `gci deploy` | Upload changed sources, build Nix envs, and roll changed services. |
-| `gci status` | Show each service's container state, unit state, IP, port, and revision. |
+| `gci status` | Show each service's container state, unit state, IP, port, and revision, plus TLS certificate mode, source, issuer, and expiry for the app's routed hosts. |
 | `gci logs <service> [-n 100] [-f]` | Show a service's journal. |
 | `gci rm [--volumes]` | Remove all of the app's containers and routes. Volumes and caches are kept unless `--volumes` is passed; host secrets are kept. |
 | `gci secret set <name>` | Read a secret value from stdin and store it for this app. |
@@ -19,3 +19,5 @@ Global flags: `-c/--config` (default `gci.toml`) and `-s/--server` (default: `se
 The first time a command runs against a host, gci uploads itself to `/usr/local/bin/gci` (verified by SHA-256) and runs host-side work through hidden `gci agent ...` subcommands with `sudo -n`.
 
 When `gci secret set` reads from a terminal, enter the value and finish with Ctrl-D. For non-interactive use, pipe the value on stdin; it is never passed as a command-line argument.
+
+Bootstrap defaults to Let's Encrypt's production ACME directory. `--acme-email` is optional; `--acme-directory` and `--acme-ca-bundle` support alternate ACME servers and their CA trust bundle. The host enables `gci-renew.timer`, which runs daily to retry ACME issuance and renew expiring certificates.
