@@ -576,15 +576,20 @@ func deleteOrphans(ctx context.Context, st *AppState) error {
 		}
 	}
 	for _, inst := range list {
-		appOwned := inst.Config["user.gci.app"] == st.App
-		legacyDeps := isLegacyDepsName(inst.Name, st.App) || inst.Config["user.gci.role"] == "deps"
-		if legacyDeps || (appOwned && !keep[inst.Name]) {
+		if shouldDeleteOrphan(inst, st.App, keep) {
 			if err := deleteInstance(ctx, inst.Name); err != nil {
 				return fmt.Errorf("delete orphan %s: %w", inst.Name, err)
 			}
 		}
 	}
 	return nil
+}
+
+func shouldDeleteOrphan(inst instance, app string, keep map[string]bool) bool {
+	appOwned := inst.Config["user.gci.app"] == app
+	legacyByName := inst.Config["user.gci.app"] == "" && isLegacyDepsName(inst.Name, app)
+	legacyDeps := legacyByName || (appOwned && inst.Config["user.gci.role"] == "deps")
+	return (appOwned || legacyByName) && (legacyDeps || !keep[inst.Name])
 }
 
 func isLegacyDepsName(name, app string) bool {

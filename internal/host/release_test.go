@@ -59,9 +59,19 @@ func TestReleaseKeyIncludesChainKey(t *testing.T) {
 }
 
 func TestSourceManifestDiff(t *testing.T) {
-	removed, err := sourceManifestDiff(
-		[]string{"keep.txt", "nested", "nested/old.txt", "nested/deep", "nested/deep/old.txt"},
-		[]string{"keep.txt", "nested", "nested/new.txt"},
+	removed, replaced, err := sourceManifestDiff(
+		[]sourceManifestEntry{
+			manifestEntry("keep.txt", false),
+			manifestEntry("nested", true),
+			manifestEntry("nested/old.txt", false),
+			manifestEntry("nested/deep", true),
+			manifestEntry("nested/deep/old.txt", false),
+		},
+		[]sourceManifestEntry{
+			manifestEntry("keep.txt", false),
+			manifestEntry("nested", true),
+			manifestEntry("nested/new.txt", false),
+		},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -70,15 +80,81 @@ func TestSourceManifestDiff(t *testing.T) {
 	if !reflect.DeepEqual(removed, want) {
 		t.Fatalf("removed = %v, want %v", removed, want)
 	}
+	if len(replaced) != 0 {
+		t.Fatalf("replaced = %v, want none", replaced)
+	}
 }
 
 func TestSourceManifestDiffRejectsUnsafePaths(t *testing.T) {
 	for _, path := range []string{"/absolute", "../parent", "nested/../../escape"} {
-		if _, err := sourceManifestDiff([]string{path}, nil); err == nil {
+		if _, _, err := sourceManifestDiff([]sourceManifestEntry{{Path: path}}, nil); err == nil {
 			t.Errorf("unsafe path %q was accepted", path)
 		}
-		if _, err := sourceManifestDiff(nil, []string{path}); err == nil {
+		if _, _, err := sourceManifestDiff(nil, []sourceManifestEntry{manifestEntry(path, false)}); err == nil {
 			t.Errorf("unsafe new path %q was accepted", path)
 		}
 	}
+}
+
+func TestSourceManifestDiffTypeChanges(t *testing.T) {
+	tests := []struct {
+		name    string
+		old     []sourceManifestEntry
+		current []sourceManifestEntry
+		want    []string
+	}{
+		{
+			name:    "file to directory",
+			old:     []sourceManifestEntry{manifestEntry("asset", false)},
+			current: []sourceManifestEntry{manifestEntry("asset", true)},
+			want:    []string{"asset"},
+		},
+		{
+			name:    "directory to file",
+			old:     []sourceManifestEntry{manifestEntry("asset", true)},
+			current: []sourceManifestEntry{manifestEntry("asset", false)},
+			want:    []string{"asset"},
+		},
+		{
+			name:    "unchanged type",
+			old:     []sourceManifestEntry{manifestEntry("asset", false)},
+			current: []sourceManifestEntry{manifestEntry("asset", false)},
+			want:    []string{},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			removed, replaced, err := sourceManifestDiff(tt.old, tt.current)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(removed) != 0 {
+				t.Fatalf("removed = %v, want none", removed)
+			}
+			if !reflect.DeepEqual(replaced, tt.want) {
+				t.Fatalf("replaced = %v, want %v", replaced, tt.want)
+			}
+		})
+	}
+}
+
+func TestSourceManifestDiffLegacyArrayHasUnknownTypes(t *testing.T) {
+	old, err := decodeSourceManifest([]byte(`["asset"]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(old) != 1 || old[0].Dir != nil {
+		t.Fatalf("legacy entries = %+v, want unknown type", old)
+	}
+	removed, replaced, err := sourceManifestDiff(old, []sourceManifestEntry{manifestEntry("asset", true)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(removed) != 0 || len(replaced) != 0 {
+		t.Fatalf("legacy transition removed=%v replaced=%v, want neither", removed, replaced)
+	}
+}
+
+func manifestEntry(path string, dir bool) sourceManifestEntry {
+	return sourceManifestEntry{Path: path, Dir: &dir}
 }

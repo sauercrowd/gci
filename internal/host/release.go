@@ -367,8 +367,18 @@ func removeRoot(path string) error {
 
 const sourceManifestPath = "/var/lib/gci/source-manifest.json"
 
-func sourceManifest(root string) ([]string, error) {
-	var entries []string
+type sourceManifestEntry struct {
+	Path string `json:"path"`
+	Dir  *bool  `json:"dir,omitempty"`
+}
+
+type sourceManifestDocument struct {
+	Version int                   `json:"version"`
+	Entries []sourceManifestEntry `json:"entries"`
+}
+
+func sourceManifest(root string) ([]sourceManifestEntry, error) {
+	entries := make([]sourceManifestEntry, 0)
 	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -380,37 +390,70 @@ func sourceManifest(root string) ([]string, error) {
 		if err != nil {
 			return err
 		}
-		entries = append(entries, filepath.ToSlash(rel))
+		isDir := entry.IsDir()
+		entries = append(entries, sourceManifestEntry{Path: filepath.ToSlash(rel), Dir: &isDir})
 		return nil
 	})
-	sort.Strings(entries)
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
 	return entries, err
 }
 
-func sourceManifestDiff(old, current []string) ([]string, error) {
-	newPaths := make(map[string]bool, len(current))
-	for _, path := range current {
-		if err := validateSourcePath(path); err != nil {
+func decodeSourceManifest(raw []byte) ([]sourceManifestEntry, error) {
+	if strings.HasPrefix(strings.TrimSpace(string(raw)), "[") {
+		var paths []string
+		if err := json.Unmarshal(raw, &paths); err != nil {
 			return nil, err
 		}
-		newPaths[path] = true
+		entries := make([]sourceManifestEntry, 0, len(paths))
+		for _, path := range paths {
+			entries = append(entries, sourceManifestEntry{Path: path})
+		}
+		return entries, nil
+	}
+	var manifest sourceManifestDocument
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		return nil, err
+	}
+	if manifest.Version != 2 {
+		return nil, fmt.Errorf("unsupported source manifest version %d", manifest.Version)
+	}
+	for _, entry := range manifest.Entries {
+		if entry.Dir == nil {
+			return nil, fmt.Errorf("source manifest entry %q is missing dir", entry.Path)
+		}
+	}
+	return manifest.Entries, nil
+}
+
+func sourceManifestDiff(old, current []sourceManifestEntry) ([]string, []string, error) {
+	newPaths := make(map[string]sourceManifestEntry, len(current))
+	for _, entry := range current {
+		if err := validateSourcePath(entry.Path); err != nil {
+			return nil, nil, err
+		}
+		newPaths[entry.Path] = entry
 	}
 	removed := make([]string, 0)
+	replaced := make([]string, 0)
 	seen := make(map[string]bool, len(old))
-	for _, path := range old {
-		if err := validateSourcePath(path); err != nil {
-			return nil, err
+	for _, entry := range old {
+		if err := validateSourcePath(entry.Path); err != nil {
+			return nil, nil, err
 		}
-		if seen[path] {
+		if seen[entry.Path] {
 			continue
 		}
-		seen[path] = true
-		if !newPaths[path] {
-			removed = append(removed, path)
+		seen[entry.Path] = true
+		currentEntry, exists := newPaths[entry.Path]
+		if !exists {
+			removed = append(removed, entry.Path)
+		} else if entry.Dir != nil && currentEntry.Dir != nil && *entry.Dir != *currentEntry.Dir {
+			replaced = append(replaced, entry.Path)
 		}
 	}
 	sort.Strings(removed)
-	return removed, nil
+	sort.Strings(replaced)
+	return removed, replaced, nil
 }
 
 func validateSourcePath(value string) error {
@@ -426,7 +469,7 @@ func validateSourcePath(value string) error {
 }
 
 func syncReleaseSource(ctx context.Context, w io.Writer, container, root string) error {
-	var old []string
+	var old []sourceManifestEntry
 	out, err := incus(ctx, "exec", container, "--", "sh", "-c",
 		"if [ -f "+sourceManifestPath+" ]; then printf yes; else printf no; fi")
 	if err != nil {
@@ -447,7 +490,8 @@ func syncReleaseSource(ctx context.Context, w io.Writer, container, root string)
 		if err != nil {
 			return err
 		}
-		if err := json.Unmarshal(raw, &old); err != nil {
+		old, err = decodeSourceManifest(raw)
+		if err != nil {
 			return fmt.Errorf("parse source manifest: %w", err)
 		}
 	}
@@ -455,12 +499,12 @@ func syncReleaseSource(ctx context.Context, w io.Writer, container, root string)
 	if err != nil {
 		return err
 	}
-	removed, err := sourceManifestDiff(old, current)
+	removed, replaced, err := sourceManifestDiff(old, current)
 	if err != nil {
 		return err
 	}
-	if len(removed) > 0 {
-		script := sourceRemovalScript(removed)
+	if len(removed) > 0 || len(replaced) > 0 {
+		script := sourceCleanupScript(removed, replaced)
 		if err := pushFile(ctx, container, "/tmp/gci-source-remove.sh", script, "0700"); err != nil {
 			return err
 		}
@@ -471,14 +515,14 @@ func syncReleaseSource(ctx context.Context, w io.Writer, container, root string)
 	if err := streamTarToInstance(ctx, w, container, root); err != nil {
 		return err
 	}
-	raw, err := json.Marshal(current)
+	raw, err := json.Marshal(sourceManifestDocument{Version: 2, Entries: current})
 	if err != nil {
 		return err
 	}
 	return pushFile(ctx, container, sourceManifestPath, string(raw), "0644")
 }
 
-func sourceRemovalScript(removed []string) string {
+func sourceCleanupScript(removed, replaced []string) string {
 	var b strings.Builder
 	b.WriteString("#!/bin/sh\nset -e\n")
 	b.WriteString(`safe_parent() {
@@ -500,6 +544,18 @@ func sourceRemovalScript(removed []string) string {
 for p do
   if safe_parent "$p"; then
     rm -f -- "/app/$p" 2>/dev/null || true
+  fi
+done
+`)
+	b.WriteString("set --")
+	for _, path := range replaced {
+		b.WriteByte(' ')
+		b.WriteString(shellQuote(path))
+	}
+	b.WriteString(`
+for p do
+  if safe_parent "$p"; then
+    rm -rf -- "/app/$p" 2>/dev/null || true
   fi
 done
 `)
