@@ -12,20 +12,29 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const starterConfig = `app = "%s"
+const starterConfig = `# gci.toml: see docs/configuration.md for every field and
+# examples/platform for Postgres + ClickHouse + an app.
+app = "%[1]s"
+# server = "prod"  # default target; see ` + "`gci server add`" + `
 
 [services.web]
-packages = ["python3"]
-command = "python3 -m http.server 8080 --directory /home/gci"
+packages = ["nodejs_22"]   # Nix packages (nixpkgs attribute names)
+source = "."               # uploaded and copied to /app
+# install = "npm install --no-audit --no-fund" # package manager reuses installed dependencies
+# build = "npm run build"  # run once per release, before activation
+reuse = "dependencies"     # dependencies (default), build (all output), or nothing (fresh)
+command = "node server.js"
 port = 8080
-health = "/"
-routes = [{ host = "*", prefix = "/" }]
-# Reuse "dependencies", "build", or "nothing" between source builds.
-reuse = "dependencies"
+health = "/healthz"        # HTTP check before Envoy switches traffic
+# health_command = "./bin/check"  # extra check run inside the new container
+routes = [{ host = "%[1]s.localhost", prefix = "/" }]
+# env = { NODE_ENV = "production" }
+# secrets = { SESSION_SECRET = "session-secret" }  # gci secret set session-secret
 `
 
 var nonNameChars = regexp.MustCompile(`[^a-z0-9-]+`)
 
+// defaultAppName derives an app name from a directory name.
 func defaultAppName(dir string) string {
 	name := nonNameChars.ReplaceAllString(strings.ToLower(filepath.Base(dir)), "-")
 	name = strings.TrimLeft(name, "0123456789-")
@@ -60,16 +69,17 @@ func writeStarterConfig(path, app string) error {
 func init() {
 	var app string
 	cmd := &cobra.Command{
-		Use:  "init",
-		Args: cobra.NoArgs,
+		Use:   "init",
+		Short: "Write a starter gci.toml",
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path, _ := cmd.Flags().GetString("config")
 			if app == "" {
-				dir, err := filepath.Abs(filepath.Dir(path))
+				abs, err := filepath.Abs(filepath.Dir(path))
 				if err != nil {
 					return err
 				}
-				app = defaultAppName(dir)
+				app = defaultAppName(abs)
 			}
 			if err := writeStarterConfig(path, app); err != nil {
 				return err
@@ -78,6 +88,6 @@ func init() {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&app, "app", "", "app name")
+	cmd.Flags().StringVar(&app, "app", "", "app name (default: derived from the directory name)")
 	rootCmd.AddCommand(cmd)
 }
