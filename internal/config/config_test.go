@@ -91,3 +91,25 @@ build = "npm run build"
 		t.Fatalf("source = %q, want %q", got, want)
 	}
 }
+
+func TestSecretConfigValidation(t *testing.T) {
+	_, err := Load(write(t, `
+app = "demo"
+[services.web]
+command = "server"
+secrets = { "bad-env" = "token" }
+`))
+	if err == nil || !strings.Contains(err.Error(), "secret environment variable") {
+		t.Fatalf("invalid secret environment error = %v", err)
+	}
+	_, err = Load(write(t, `
+app = "demo"
+[services.web]
+command = "server"
+env = { TOKEN = "plain" }
+secrets = { TOKEN = "token" }
+`))
+	if err == nil || !strings.Contains(err.Error(), "also defined in env") {
+		t.Fatalf("duplicate secret environment error = %v", err)
+	}
+}

@@ -23,8 +23,10 @@ import (
 const buildTimeout = 30 * time.Minute
 
 type preparedService struct {
-	env     string
-	release *Release
+	env          string
+	release      *Release
+	secrets      map[string]string
+	secretDigest string
 }
 
 func baseFingerprint(ctx context.Context) (string, error) {

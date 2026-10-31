@@ -156,11 +156,30 @@ func Apply(ctx context.Context, w io.Writer, plan Plan) error {
 	if err != nil {
 		return err
 	}
+	resolved := make(map[string]map[string]string, len(order))
+	digests := make(map[string]string, len(order))
+	var missing []string
 	for _, name := range order {
 		svc := cfg.Services[name]
 		if svc.Source != "" && (plan.Sources[name] == "" || !HasSource(cfg.App, name, plan.Sources[name])) {
 			return fmt.Errorf("%s: source %s was not uploaded", name, plan.Sources[name])
 		}
+		values, err := resolveSecrets(cfg.App, svc)
+		if err != nil {
+			if strings.HasPrefix(err.Error(), "missing secrets:") {
+				missing = append(missing, name+": "+strings.TrimPrefix(err.Error(), "missing secrets: "))
+				continue
+			}
+			return fmt.Errorf("%s: %w", name, err)
+		}
+		digest, err := secretDigest(values)
+		if err != nil {
+			return fmt.Errorf("%s: secret digest: %w", name, err)
+		}
+		resolved[name], digests[name] = values, digest
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("missing secrets: %s", strings.Join(missing, "; "))
 	}
 
 	baseFP := ""
@@ -185,7 +204,7 @@ func Apply(ctx context.Context, w io.Writer, plan Plan) error {
 			return fmt.Errorf("%s: nix: %w", name, err)
 		}
 		fmt.Fprintf(w, "==> %s: env %s (%s)\n", name, filepath.Base(env), time.Since(t).Round(time.Millisecond))
-		item := preparedService{env: env}
+		item := preparedService{env: env, secrets: resolved[name], secretDigest: digests[name]}
 		if svc.Source != "" {
 			item.release, err = prepareRelease(ctx, w, hc, cfg, name, env, baseFP, plan.Sources[name], st, plan.Clean)
 			if err != nil {
@@ -253,10 +272,10 @@ func Apply(ctx context.Context, w io.Writer, plan Plan) error {
 }
 
 func revision(cfg *config.Config, name, env string) string {
-	return revisionWithRelease(cfg, name, env, "", time.Time{})
+	return revisionWithRelease(cfg, name, env, "", "", time.Time{})
 }
 
-func revisionWithRelease(cfg *config.Config, name, env, releaseKey string, releaseCreated time.Time) string {
+func revisionWithRelease(cfg *config.Config, name, env, releaseKey, secretsHash string, releaseCreated time.Time) string {
 	svc := *cfg.Services[name]
 	svc.Source = ""
 	svc.Routes = nil // routing changes do not require a new container
@@ -265,8 +284,9 @@ func revisionWithRelease(cfg *config.Config, name, env, releaseKey string, relea
 		Env            string
 		Release        string
 		ReleaseCreated time.Time
+		Secrets        string
 		Net            string
-	}{svc, env, releaseKey, releaseCreated, "release"})
+	}{svc, env, releaseKey, releaseCreated, secretsHash, "release"})
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:])[:12]
 }
@@ -288,7 +308,7 @@ func applyService(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.
 		releaseKey = prepared.release.Key
 		releaseCreated = prepared.release.Created
 	}
-	rev := revisionWithRelease(cfg, name, env, releaseKey, releaseCreated)
+	rev := revisionWithRelease(cfg, name, env, releaseKey, prepared.secretDigest, releaseCreated)
 	cur := st.Services[name]
 	if cur != nil && cur.Rev == rev {
 		inst, _ := getInstance(ctx, cur.Container)
@@ -386,7 +406,7 @@ func applyService(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.
 	}
 	waitSystemd(ctx, container)
 
-	envVars := serviceEnvVars(app, name, svc, env)
+	envVars := serviceEnvVars(app, name, svc, env, prepared.secrets)
 	var pre []string
 	for _, vol := range vols {
 		pre = append(pre, fmt.Sprintf("+/bin/chown %s: %s", svc.User, svc.Volumes[vol]))
@@ -484,7 +504,7 @@ func applyService(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.
 	return true, nil
 }
 
-func serviceEnvVars(app, name string, svc *config.Service, env string) map[string]string {
+func serviceEnvVars(app, name string, svc *config.Service, env string, secrets map[string]string) map[string]string {
 	vars := map[string]string{
 		"PATH":          env + "/bin:/usr/bin:/bin",
 		"SSL_CERT_FILE": env + "/etc/ssl/certs/ca-bundle.crt",
@@ -499,6 +519,9 @@ func serviceEnvVars(app, name string, svc *config.Service, env string) map[strin
 		vars["PORT"] = fmt.Sprint(svc.Port)
 	}
 	for key, value := range svc.Env {
+		vars[key] = value
+	}
+	for key, value := range secrets {
 		vars[key] = value
 	}
 	return vars
