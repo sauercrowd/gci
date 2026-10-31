@@ -23,10 +23,10 @@ source = "."               # uploaded and copied to /app
 # install = "npm install --no-audit --no-fund" # package manager reuses installed dependencies
 # build = "npm run build"  # run once per release, before activation
 reuse = "dependencies"     # dependencies (default), build (all output), or nothing (fresh)
+# migrate = "npm run db:migrate" # stateless: temp copy; volumes: before start
 command = "node server.js"
 port = 8080
 health = "/healthz"        # HTTP check before Envoy switches traffic
-# migrate = "npm run db:migrate" # stateless: temp copy; volumes: before start
 # health_command = "./bin/check"  # extra check run inside the new container
 routes = [{ host = "%[1]s.localhost", prefix = "/" }]
 # env = { NODE_ENV = "production" }
