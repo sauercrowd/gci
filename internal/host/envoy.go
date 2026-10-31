@@ -107,7 +107,7 @@ func envoyResources(states []*AppState, httpPort int, envoyIP string) (lds, cds 
 		}
 		routes = append(routes, any_{
 			"match":           any_{"prefix": "/"},
-			"direct_response": any_{"status": 404, "body": any_{"inline_string": "gci: no route\n"}},
+			"direct_response": any_{"status": 404, "body": any_{"inline_string": "no route\n"}},
 		})
 		vhs = append(vhs, any_{"name": vhostName(h), "domains": []string{h}, "routes": routes})
 	}
