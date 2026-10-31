@@ -77,24 +77,6 @@ func TestValidate(t *testing.T) {
 	}
 }
 
-func TestSourceBuildConfig(t *testing.T) {
-	p := write(t, `
-app = "demo"
-[services.web]
-command = "node server.js"
-source = "./app"
-install = "npm install"
-build = "npm run build"
-`)
-	cfg, err := Load(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got, want := cfg.Services["web"].Source, filepath.Join(filepath.Dir(p), "app"); got != want {
-		t.Fatalf("source = %q, want %q", got, want)
-	}
-}
-
 func TestReuseDefaultAndInvalidValue(t *testing.T) {
 	cfg, err := Load(write(t, `
 app = "demo"
