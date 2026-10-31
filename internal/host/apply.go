@@ -22,6 +22,7 @@ import (
 type Plan struct {
 	Config  *config.Config    `json:"config"`
 	Sources map[string]string `json:"sources"` // service -> source content hash
+	Clean   bool              `json:"clean,omitempty"`
 }
 
 // basePackages are added to every service env.
@@ -217,7 +218,7 @@ func Apply(ctx context.Context, w io.Writer, plan Plan) error {
 		fmt.Fprintf(w, "==> %s: env %s (%s)\n", name, filepath.Base(env), time.Since(t).Round(time.Millisecond))
 		item := preparedService{env: env, secrets: resolved[name], secretDigest: digests[name]}
 		if svc.Source != "" {
-			item.release, err = prepareRelease(ctx, w, hc, cfg, name, env, baseFP, plan.Sources[name], st)
+			item.release, err = prepareRelease(ctx, w, hc, cfg, name, env, baseFP, plan.Sources[name], st, plan.Clean)
 			if err != nil {
 				return fmt.Errorf("%s: %w", name, err)
 			}
@@ -290,16 +291,21 @@ func revision(cfg *config.Config, name, env, sourceHash string) string {
 }
 
 func revisionWithSecrets(cfg *config.Config, name, env, releaseKey, secretsHash string) string {
+	return revisionWithRelease(cfg, name, env, releaseKey, secretsHash, time.Time{})
+}
+
+func revisionWithRelease(cfg *config.Config, name, env, releaseKey, secretsHash string, releaseCreated time.Time) string {
 	svc := *cfg.Services[name]
 	svc.Source = ""
 	svc.Routes = nil // routing changes do not require a new container
 	raw, _ := json.Marshal(struct {
-		Svc     config.Service
-		Env     string
-		Release string
-		Secrets string
-		Net     string
-	}{svc, env, releaseKey, secretsHash, "release"})
+		Svc            config.Service
+		Env            string
+		Release        string
+		ReleaseCreated time.Time
+		Secrets        string
+		Net            string
+	}{svc, env, releaseKey, releaseCreated, secretsHash, "release"})
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:])[:12]
 }
@@ -316,10 +322,12 @@ func applyService(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.
 	t := time.Now()
 	env := prepared.env
 	releaseKey := ""
+	var releaseCreated time.Time
 	if prepared.release != nil {
 		releaseKey = prepared.release.Key
+		releaseCreated = prepared.release.Created
 	}
-	rev := revisionWithSecrets(cfg, name, env, releaseKey, prepared.secretDigest)
+	rev := revisionWithRelease(cfg, name, env, releaseKey, prepared.secretDigest, releaseCreated)
 	cur := st.Services[name]
 	if cur != nil && cur.Rev == rev {
 		inst, _ := getInstance(ctx, cur.Container)
@@ -335,6 +343,12 @@ func applyService(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.
 			}
 			logf("unchanged (%s)", cur.Container)
 			return false, nil
+		}
+	}
+
+	if svc.Migrate != "" && (cur == nil || cur.Rev != rev) {
+		if err := runMigration(ctx, w, hc, cfg, name, env, prepared, rev); err != nil {
+			return false, err
 		}
 	}
 
@@ -364,7 +378,7 @@ func applyService(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.
 		return false, err
 	}
 	if prepared.release != nil {
-		if _, err := incus(ctx, "config", "unset", container, "user.gci.key"); err != nil {
+		if err := unsetInstanceConfig(ctx, container, "user.gci.key"); err != nil {
 			_ = deleteInstance(ctx, container)
 			return false, err
 		}
@@ -417,25 +431,7 @@ func applyService(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.
 	}
 	waitSystemd(ctx, container)
 
-	envVars := map[string]string{
-		"PATH":          env + "/bin:/usr/bin:/bin",
-		"SSL_CERT_FILE": env + "/etc/ssl/certs/ca-bundle.crt",
-		"GCI_APP":       app,
-		"GCI_SERVICE":   name,
-		"HOME":          "/home/gci",
-	}
-	if svc.User == "root" {
-		envVars["HOME"] = "/root"
-	}
-	if svc.Port != 0 {
-		envVars["PORT"] = fmt.Sprint(svc.Port)
-	}
-	for k, v := range svc.Env {
-		envVars[k] = v
-	}
-	for k, v := range prepared.secrets {
-		envVars[k] = v
-	}
+	envVars := serviceEnvVars(app, name, svc, env, prepared.secrets)
 	var pre []string
 	for _, vol := range vols {
 		pre = append(pre, fmt.Sprintf("+/bin/chown %s: %s", svc.User, svc.Volumes[vol]))
@@ -533,6 +529,29 @@ func applyService(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.
 	return true, nil
 }
 
+func serviceEnvVars(app, name string, svc *config.Service, env string, secrets map[string]string) map[string]string {
+	vars := map[string]string{
+		"PATH":          env + "/bin:/usr/bin:/bin",
+		"SSL_CERT_FILE": env + "/etc/ssl/certs/ca-bundle.crt",
+		"GCI_APP":       app,
+		"GCI_SERVICE":   name,
+		"HOME":          "/home/gci",
+	}
+	if svc.User == "root" {
+		vars["HOME"] = "/root"
+	}
+	if svc.Port != 0 {
+		vars["PORT"] = fmt.Sprint(svc.Port)
+	}
+	for key, value := range svc.Env {
+		vars[key] = value
+	}
+	for key, value := range secrets {
+		vars[key] = value
+	}
+	return vars
+}
+
 func addRoot(ctx context.Context, storePath, link string) error {
 	nix, err := nixBin()
 	if err != nil {
@@ -543,7 +562,7 @@ func addRoot(ctx context.Context, storePath, link string) error {
 }
 
 func deleteOrphans(ctx context.Context, st *AppState) error {
-	list, err := listInstances(ctx, "user.gci.app="+st.App)
+	list, err := listInstances(ctx)
 	if err != nil {
 		return err
 	}
@@ -554,19 +573,36 @@ func deleteOrphans(ctx context.Context, st *AppState) error {
 	for _, rels := range st.Releases {
 		for _, rel := range rels {
 			keep[rel.Instance] = true
-			if rel.Deps != "" {
-				keep[rel.Deps] = true
-			}
 		}
 	}
 	for _, inst := range list {
-		if inst.Config["user.gci.app"] == st.App && !keep[inst.Name] {
+		appOwned := inst.Config["user.gci.app"] == st.App
+		legacyDeps := isLegacyDepsName(inst.Name, st.App) || inst.Config["user.gci.role"] == "deps"
+		if legacyDeps || (appOwned && !keep[inst.Name]) {
 			if err := deleteInstance(ctx, inst.Name); err != nil {
 				return fmt.Errorf("delete orphan %s: %w", inst.Name, err)
 			}
 		}
 	}
 	return nil
+}
+
+func isLegacyDepsName(name, app string) bool {
+	prefix := "gci-" + app + "-"
+	if !strings.HasPrefix(name, prefix) {
+		return false
+	}
+	rest := strings.TrimPrefix(name, prefix)
+	index := strings.LastIndex(rest, "-i")
+	if index <= 0 || len(rest)-index-2 != 7 {
+		return false
+	}
+	for _, char := range rest[index+2:] {
+		if !strings.ContainsRune("0123456789abcdef", char) {
+			return false
+		}
+	}
+	return true
 }
 
 func pruneAppReleases(ctx context.Context, st *AppState, keep int) error {

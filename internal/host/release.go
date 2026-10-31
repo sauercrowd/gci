@@ -14,7 +14,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -54,63 +53,6 @@ func baseFingerprint(ctx context.Context) (string, error) {
 	return "", fmt.Errorf("image alias %q not found", baseImage)
 }
 
-func depsKey(baseFP, env, user, install, srcDir string, inputs []string) (string, error) {
-	h := sha256.New()
-	for _, value := range []string{baseFP, env, user, install} {
-		hashString(h, value)
-	}
-	paths := append([]string(nil), inputs...)
-	sort.Strings(paths)
-	for _, input := range paths {
-		if err := config.ValidateInstallInput(input); err != nil {
-			return "", err
-		}
-		root := filepath.Join(srcDir, filepath.FromSlash(input))
-		info, err := os.Lstat(root)
-		if err != nil {
-			return "", err
-		}
-		hashString(h, input)
-		if !info.IsDir() {
-			if err := hashPath(h, root, input, info); err != nil {
-				return "", err
-			}
-			continue
-		}
-		var paths []string
-		err = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-			paths = append(paths, path)
-			return nil
-		})
-		if err != nil {
-			return "", err
-		}
-		sort.Strings(paths)
-		for _, path := range paths {
-			rel, err := filepath.Rel(root, path)
-			if err != nil {
-				return "", err
-			}
-			itemInfo, err := os.Lstat(path)
-			if err != nil {
-				return "", err
-			}
-			rel = filepath.ToSlash(rel)
-			if rel == "." {
-				rel = ""
-			}
-			hashString(h, rel)
-			if err := hashPath(h, path, rel, itemInfo); err != nil {
-				return "", err
-			}
-		}
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
-}
-
 type hashWriter interface{ Write([]byte) (int, error) }
 
 func hashString(h hashWriter, value string) {
@@ -120,58 +62,24 @@ func hashString(h hashWriter, value string) {
 	_, _ = io.WriteString(h, value)
 }
 
-func hashPath(h hashWriter, path, rel string, info os.FileInfo) error {
-	hashString(h, rel)
-	hashString(h, strconv.FormatUint(uint64(info.Mode().Perm()), 8))
-	switch {
-	case info.Mode().IsRegular():
-		f, err := os.Open(path)
-		if err != nil {
-			return err
-		}
-		defer f.Close()
-		return hashFileContents(h, f)
-	case info.IsDir():
-	case info.Mode()&os.ModeSymlink != 0:
-		target, err := os.Readlink(path)
-		if err != nil {
-			return err
-		}
-		hashString(h, target)
-	default:
-		return fmt.Errorf("unsupported install input %q", path)
-	}
-	return nil
-}
-
-func hashFileContents(h hashWriter, r io.Reader) error {
-	var buf [32 * 1024]byte
-	for {
-		n, err := r.Read(buf[:])
-		if n > 0 {
-			var size [8]byte
-			binary.BigEndian.PutUint64(size[:], uint64(n))
-			_, _ = h.Write(size[:])
-			_, _ = h.Write(buf[:n])
-		}
-		if err != nil {
-			if err == io.EOF {
-				return nil
-			}
-			return err
-		}
-	}
-}
-
-func releaseKey(baseFP, env, user, deps, sourceHash, build string, serviceEnv map[string]string) string {
+func chainKey(baseFP, env, user, install, reuse, build string, serviceEnv map[string]string) string {
 	h := sha256.New()
-	if deps != "" {
-		hashString(h, deps)
-	} else {
-		hashString(h, baseFP)
-		hashString(h, env)
-		hashString(h, user)
+	for _, value := range []string{baseFP, env, user, install, reuse} {
+		hashString(h, value)
 	}
+	if reuse == "build" {
+		hashString(h, build)
+		for _, key := range sortedKeys(serviceEnv) {
+			hashString(h, key)
+			hashString(h, serviceEnv[key])
+		}
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+func releaseKey(chain, sourceHash, build string, serviceEnv map[string]string) string {
+	h := sha256.New()
+	hashString(h, chain)
 	hashString(h, sourceHash)
 	hashString(h, build)
 	for _, key := range sortedKeys(serviceEnv) {
@@ -181,54 +89,77 @@ func releaseKey(baseFP, env, user, deps, sourceHash, build string, serviceEnv ma
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-func releaseName(app, svc, key string) string {
-	return fmt.Sprintf("gci-%s-%s-r%s", app, svc, key[:7])
+func buildStart(rels []*Release, key, reuse string, clean bool) (from string, fresh bool) {
+	if clean || reuse == "nothing" {
+		return "", true
+	}
+	var newest *Release
+	for _, rel := range rels {
+		if rel.ChainKey != key || (reuse == "dependencies" && !rel.Installed) {
+			continue
+		}
+		if newest == nil || rel.Created.After(newest.Created) {
+			newest = rel
+		}
+	}
+	if newest == nil {
+		return "", true
+	}
+	if reuse == "dependencies" {
+		return newest.Instance + "/installed", false
+	}
+	if reuse == "build" {
+		return newest.Instance, false
+	}
+	return "", true
 }
 
-func depsName(app, svc, key string) string {
-	return fmt.Sprintf("gci-%s-%s-i%s", app, svc, key[:7])
+func releaseName(app, svc, key string) string {
+	return fmt.Sprintf("gci-%s-%s-r%s", app, svc, key[:7])
 }
 
 func builderName(app, svc, key string) string {
 	return fmt.Sprintf("gci-%s-%s-x%s", app, svc, key[:7])
 }
 
-func prepareRelease(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.Config, name, env, baseFP, sourceHash string, st *AppState) (*Release, error) {
+func prepareRelease(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.Config, name, env, baseFP, sourceHash string, st *AppState, clean bool) (*Release, error) {
 	svc := cfg.Services[name]
 	srcDir := sourceDir(cfg.App, name, sourceHash)
-	var depKey, dep string
-	if svc.Install != "" {
-		var err error
-		depKey, err = depsKey(baseFP, env, svc.User, svc.Install, srcDir, svc.InstallInputs)
-		if err != nil {
-			return nil, fmt.Errorf("deps key: %w", err)
-		}
-		dep = depsName(cfg.App, name, depKey)
-		if !exists(ctx, "info", dep) {
-			if err := buildDeps(ctx, w, hc, cfg, name, env, sourceHash, depKey, srcDir); err != nil {
-				return nil, err
-			}
-		} else {
-			fmt.Fprintf(w, "==> %s: deps cached (%s)\n", name, dep)
-		}
-	}
-
-	key := releaseKey(baseFP, env, svc.User, depKey, sourceHash, svc.Build, svc.Env)
+	chain := chainKey(baseFP, env, svc.User, svc.Install, svc.Reuse, svc.Build, svc.Env)
+	key := releaseKey(chain, sourceHash, svc.Build, svc.Env)
 	instanceName := releaseName(cfg.App, name, key)
-	if !exists(ctx, "info", instanceName) {
-		if err := buildRelease(ctx, w, hc, cfg, name, env, sourceHash, key, srcDir, dep); err != nil {
-			return nil, err
-		}
-	} else {
-		fmt.Fprintf(w, "==> %s: release cached (%s)\n", name, instanceName)
-	}
-
-	rel := &Release{Key: key, Instance: instanceName, Deps: dep, Env: env, Source: sourceHash, Created: time.Now().UTC()}
+	var previous *Release
 	for _, existing := range st.Releases[name] {
 		if existing.Key == key {
-			rel.Created = existing.Created
+			previous = existing
 			break
 		}
+	}
+	cached := exists(ctx, "info", instanceName) && !clean
+	created := time.Now().UTC()
+	installed := svc.Reuse == "dependencies"
+	if cached {
+		fmt.Fprintf(w, "==> %s: release cached (%s)\n", name, instanceName)
+		if previous != nil {
+			created = previous.Created
+			installed = previous.Installed
+		}
+	} else {
+		from, fresh := buildStart(st.Releases[name], chain, svc.Reuse, clean)
+		if fresh {
+			fmt.Fprintf(w, "==> %s: building from base image\n", name)
+		} else {
+			fmt.Fprintf(w, "==> %s: building from %s\n", name, from)
+		}
+		if err := buildRelease(ctx, w, hc, cfg, name, env, key, srcDir, from); err != nil {
+			return nil, err
+		}
+		installed = svc.Reuse == "dependencies"
+	}
+
+	rel := &Release{Key: key, ChainKey: chain, Instance: instanceName, Installed: installed, Env: env, Source: sourceHash, Created: created}
+	if !cached {
+		rel.Created = time.Now().UTC()
 	}
 	rels := st.Releases[name][:0]
 	for _, existing := range st.Releases[name] {
@@ -246,16 +177,27 @@ func prepareRelease(ctx context.Context, w io.Writer, hc *HostConfig, cfg *confi
 	return rel, nil
 }
 
-func buildDeps(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.Config, svcName, env, sourceHash, key, srcDir string) error {
+func buildRelease(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.Config, svcName, env, key, srcDir, from string) error {
 	svc := cfg.Services[svcName]
 	builder := builderName(cfg.App, svcName, key)
-	final := depsName(cfg.App, svcName, key)
+	final := releaseName(cfg.App, svcName, key)
 	_ = deleteInstance(ctx, builder)
-	args := []string{"init", baseImage, builder, "--profile", profileName, "-s", hc.StoragePool,
-		"-c", "user.gci.app=" + cfg.App, "-c", "user.gci.service=" + svcName, "-c", "user.gci.role=build"}
-	if _, err := incus(ctx, args...); err != nil {
-		_ = deleteInstance(ctx, builder)
-		return err
+	if from != "" {
+		if _, err := incus(ctx, "copy", from, builder, "-s", hc.StoragePool,
+			"-c", "user.gci.role=build"); err != nil {
+			_ = deleteInstance(ctx, builder)
+			return err
+		}
+		if err := unsetInstanceConfig(ctx, builder, "user.gci.key"); err != nil {
+			_ = deleteInstance(ctx, builder)
+			return err
+		}
+	} else {
+		if _, err := incus(ctx, "init", baseImage, builder, "--profile", profileName, "-s", hc.StoragePool,
+			"-c", "user.gci.app="+cfg.App, "-c", "user.gci.service="+svcName, "-c", "user.gci.role=build"); err != nil {
+			_ = deleteInstance(ctx, builder)
+			return err
+		}
 	}
 	fail := func(err error) error {
 		_ = deleteInstance(ctx, builder)
@@ -281,69 +223,27 @@ func buildDeps(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.Con
 		return fail(err)
 	}
 	if _, err := incus(ctx, "exec", builder, "--", "sh", "-c",
-		fmt.Sprintf("chown %s:%s /var/cache/gci && mkdir -p /app && chown %s:%s /app", uid, gid, uid, gid)); err != nil {
+		fmt.Sprintf("chown %s:%s /var/cache/gci && mkdir -p /app /var/lib/gci && chown %s:%s /app /var/lib/gci", uid, gid, uid, gid)); err != nil {
 		return fail(err)
 	}
-	if err := streamTarToInstance(ctx, w, builder, srcDir, svc.InstallInputs); err != nil {
+	if err := syncReleaseSource(ctx, w, builder, srcDir); err != nil {
 		return fail(err)
 	}
 	if _, err := incus(ctx, "exec", builder, "--", "chown", "-R", uid+":"+gid, "/app"); err != nil {
 		return fail(err)
 	}
-	fmt.Fprintf(w, "==> %s: installing dependencies\n", svcName)
-	if err := runBuildCommand(ctx, w, builder, uid, gid, baseBuildEnv(env, cfg.App, svcName, svc.User), svc.Install); err != nil {
-		return fail(err)
-	}
-	if _, err := incus(ctx, "config", "device", "remove", builder, "cache"); err != nil {
-		return fail(err)
-	}
-	if _, err := incus(ctx, "stop", builder); err != nil {
-		return fail(err)
-	}
-	if _, err := incus(ctx, "move", builder, final); err != nil {
-		return fail(err)
-	}
-	if _, err := incus(ctx, "config", "set", final, "user.gci.role", "deps"); err != nil {
-		_ = deleteInstance(ctx, final)
-		return err
-	}
-	if _, err := incus(ctx, "config", "set", final, "user.gci.key", key); err != nil {
-		_ = deleteInstance(ctx, final)
-		return err
-	}
-	return nil
-}
-
-func buildRelease(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.Config, svcName, env, sourceHash, key, srcDir, deps string) error {
-	svc := cfg.Services[svcName]
-	builder := builderName(cfg.App, svcName, key)
-	final := releaseName(cfg.App, svcName, key)
-	_ = deleteInstance(ctx, builder)
-	if deps != "" {
-		if _, err := incus(ctx, "copy", deps, builder, "-s", hc.StoragePool,
-			"-c", "user.gci.role=build"); err != nil {
-			_ = deleteInstance(ctx, builder)
-			return err
-		}
-		if _, err := incus(ctx, "config", "unset", builder, "user.gci.key"); err != nil {
-			_ = deleteInstance(ctx, builder)
-			return err
-		}
-	} else {
-		if _, err := incus(ctx, "init", baseImage, builder, "--profile", profileName, "-s", hc.StoragePool,
-			"-c", "user.gci.app="+cfg.App, "-c", "user.gci.service="+svcName, "-c", "user.gci.role=build"); err != nil {
-			_ = deleteInstance(ctx, builder)
-			return err
+	buildEnv := baseBuildEnv(env, cfg.App, svcName, svc.User)
+	if svc.Install != "" {
+		fmt.Fprintf(w, "==> %s: installing dependencies\n", svcName)
+		if err := runBuildCommand(ctx, w, builder, uid, gid, buildEnv, svc.Install); err != nil {
+			return fail(err)
 		}
 	}
-	fail := func(err error) error {
-		_ = deleteInstance(ctx, builder)
-		return err
-	}
-	hasCache := svc.Build != ""
-	cacheName := cacheVolumeName(cfg.App, svcName)
-	if hasCache {
-		if err := ensureCacheVolume(ctx, hc, cacheName); err != nil {
+	if svc.Reuse == "dependencies" {
+		if _, err := incus(ctx, "config", "device", "remove", builder, "cache"); err != nil {
+			return fail(err)
+		}
+		if _, err := incus(ctx, "snapshot", "create", builder, "installed"); err != nil {
 			return fail(err)
 		}
 		if _, err := incus(ctx, "config", "device", "add", builder, "cache", "disk",
@@ -351,34 +251,8 @@ func buildRelease(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.
 			return fail(err)
 		}
 	}
-	if _, err := incus(ctx, "start", builder); err != nil {
-		return fail(err)
-	}
-	if _, err := waitIPv4(ctx, builder, 60*time.Second); err != nil {
-		return fail(err)
-	}
-	waitSystemd(ctx, builder)
-	uid, gid, err := builderIDs(ctx, builder, svc.User)
-	if err != nil {
-		return fail(err)
-	}
-	if hasCache {
-		if _, err := incus(ctx, "exec", builder, "--", "sh", "-c",
-			fmt.Sprintf("chown %s:%s /var/cache/gci && mkdir -p /app && chown %s:%s /app", uid, gid, uid, gid)); err != nil {
-			return fail(err)
-		}
-	} else if _, err := incus(ctx, "exec", builder, "--", "mkdir", "-p", "/app"); err != nil {
-		return fail(err)
-	}
-	if err := streamTarToInstance(ctx, w, builder, srcDir, nil); err != nil {
-		return fail(err)
-	}
-	if _, err := incus(ctx, "exec", builder, "--", "chown", "-R", uid+":"+gid, "/app"); err != nil {
-		return fail(err)
-	}
 	if svc.Build != "" {
 		fmt.Fprintf(w, "==> %s: building source\n", svcName)
-		buildEnv := baseBuildEnv(env, cfg.App, svcName, svc.User)
 		for k, v := range svc.Env {
 			buildEnv[k] = v
 		}
@@ -386,12 +260,13 @@ func buildRelease(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.
 			return fail(err)
 		}
 	}
-	if hasCache {
-		if _, err := incus(ctx, "config", "device", "remove", builder, "cache"); err != nil {
-			return fail(err)
-		}
+	if _, err := incus(ctx, "config", "device", "remove", builder, "cache"); err != nil {
+		return fail(err)
 	}
 	if _, err := incus(ctx, "stop", builder); err != nil {
+		return fail(err)
+	}
+	if err := deleteExistingInstance(ctx, final); err != nil {
 		return fail(err)
 	}
 	if _, err := incus(ctx, "move", builder, final); err != nil {
@@ -490,11 +365,178 @@ func removeRoot(path string) error {
 	return nil
 }
 
-func streamTarToInstance(ctx context.Context, w io.Writer, container, root string, inputs []string) error {
+const sourceManifestPath = "/var/lib/gci/source-manifest.json"
+
+func sourceManifest(root string) ([]string, error) {
+	var entries []string
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if path == root {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		entries = append(entries, filepath.ToSlash(rel))
+		return nil
+	})
+	sort.Strings(entries)
+	return entries, err
+}
+
+func sourceManifestDiff(old, current []string) ([]string, error) {
+	newPaths := make(map[string]bool, len(current))
+	for _, path := range current {
+		if err := validateSourcePath(path); err != nil {
+			return nil, err
+		}
+		newPaths[path] = true
+	}
+	removed := make([]string, 0)
+	seen := make(map[string]bool, len(old))
+	for _, path := range old {
+		if err := validateSourcePath(path); err != nil {
+			return nil, err
+		}
+		if seen[path] {
+			continue
+		}
+		seen[path] = true
+		if !newPaths[path] {
+			removed = append(removed, path)
+		}
+	}
+	sort.Strings(removed)
+	return removed, nil
+}
+
+func validateSourcePath(value string) error {
+	if value == "" || filepath.IsAbs(value) {
+		return fmt.Errorf("unsafe source manifest path %q", value)
+	}
+	for _, part := range strings.Split(filepath.ToSlash(value), "/") {
+		if part == "" || part == "." || part == ".." {
+			return fmt.Errorf("unsafe source manifest path %q", value)
+		}
+	}
+	return nil
+}
+
+func syncReleaseSource(ctx context.Context, w io.Writer, container, root string) error {
+	var old []string
+	out, err := incus(ctx, "exec", container, "--", "sh", "-c",
+		"if [ -f "+sourceManifestPath+" ]; then printf yes; else printf no; fi")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(out) == "yes" {
+		tmp, err := os.CreateTemp("", "gci-source-manifest-*")
+		if err != nil {
+			return err
+		}
+		tmpPath := tmp.Name()
+		_ = tmp.Close()
+		defer os.Remove(tmpPath)
+		if _, err := incus(ctx, "file", "pull", container+sourceManifestPath, tmpPath); err != nil {
+			return err
+		}
+		raw, err := os.ReadFile(tmpPath)
+		if err != nil {
+			return err
+		}
+		if err := json.Unmarshal(raw, &old); err != nil {
+			return fmt.Errorf("parse source manifest: %w", err)
+		}
+	}
+	current, err := sourceManifest(root)
+	if err != nil {
+		return err
+	}
+	removed, err := sourceManifestDiff(old, current)
+	if err != nil {
+		return err
+	}
+	if len(removed) > 0 {
+		script := sourceRemovalScript(removed)
+		if err := pushFile(ctx, container, "/tmp/gci-source-remove.sh", script, "0700"); err != nil {
+			return err
+		}
+		if _, err := incus(ctx, "exec", container, "--", "sh", "/tmp/gci-source-remove.sh"); err != nil {
+			return err
+		}
+	}
+	if err := streamTarToInstance(ctx, w, container, root); err != nil {
+		return err
+	}
+	raw, err := json.Marshal(current)
+	if err != nil {
+		return err
+	}
+	return pushFile(ctx, container, sourceManifestPath, string(raw), "0644")
+}
+
+func sourceRemovalScript(removed []string) string {
+	var b strings.Builder
+	b.WriteString("#!/bin/sh\nset -e\n")
+	b.WriteString(`safe_parent() {
+  parent=${1%/*}
+  [ "$parent" = "$1" ] && parent=.
+  while [ "$parent" != "." ]; do
+    [ -L "/app/$parent" ] && return 1
+    case "$parent" in */*) parent=${parent%/*} ;; *) parent=. ;; esac
+  done
+  return 0
+}
+`)
+	b.WriteString("set --")
+	for _, path := range removed {
+		b.WriteByte(' ')
+		b.WriteString(shellQuote(path))
+	}
+	b.WriteString(`
+for p do
+  if safe_parent "$p"; then
+    rm -f -- "/app/$p" 2>/dev/null || true
+  fi
+done
+`)
+	dirs := map[string]bool{}
+	for _, path := range removed {
+		for dir := filepath.ToSlash(filepath.Dir(filepath.FromSlash(path))); dir != "."; dir = filepath.ToSlash(filepath.Dir(filepath.FromSlash(dir))) {
+			dirs[dir] = true
+		}
+		dirs[path] = true
+	}
+	ordered := make([]string, 0, len(dirs))
+	for dir := range dirs {
+		ordered = append(ordered, dir)
+	}
+	sort.Slice(ordered, func(i, j int) bool {
+		di, dj := strings.Count(ordered[i], "/"), strings.Count(ordered[j], "/")
+		if di != dj {
+			return di > dj
+		}
+		return ordered[i] < ordered[j]
+	})
+	for _, dir := range ordered {
+		fmt.Fprintf(&b, "if safe_parent %s && [ ! -L %s ]; then rmdir -- %s 2>/dev/null || true; fi\n",
+			shellQuote(dir), shellQuote("/app/"+dir), shellQuote("/app/"+dir))
+	}
+	return b.String()
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
+}
+
+func streamTarToInstance(ctx context.Context, w io.Writer, container, root string) error {
 	r, pipe := io.Pipe()
 	tarErr := make(chan error, 1)
 	go func() {
-		tarErr <- writeTar(pipe, root, inputs)
+		tarErr <- writeTar(pipe, root)
 		_ = pipe.Close()
 	}()
 	args := []string{"exec", container, "--", "tar", "-C", "/app", "-xf", "-"}
@@ -506,53 +548,20 @@ func streamTarToInstance(ctx context.Context, w io.Writer, container, root strin
 	return <-tarErr
 }
 
-func writeTar(dst io.Writer, root string, inputs []string) error {
+func writeTar(dst io.Writer, root string) error {
 	tw := tar.NewWriter(dst)
 	var paths []string
-	if inputs == nil {
-		err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-			if path != root {
-				paths = append(paths, path)
-			}
-			return nil
-		})
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-	} else {
-		set := map[string]bool{}
-		add := func(path string) error {
-			info, err := os.Lstat(path)
-			if err != nil {
-				return err
-			}
-			if info.IsDir() {
-				return filepath.WalkDir(path, func(p string, entry os.DirEntry, err error) error {
-					if err != nil {
-						return err
-					}
-					set[p] = true
-					return nil
-				})
-			}
-			set[path] = true
-			return nil
-		}
-		for _, input := range inputs {
-			path := filepath.Join(root, filepath.FromSlash(input))
-			if err := add(path); err != nil {
-				return err
-			}
-			for parent := filepath.Dir(path); parent != root && strings.HasPrefix(parent, root+string(filepath.Separator)); parent = filepath.Dir(parent) {
-				set[parent] = true
-			}
-		}
-		for path := range set {
+		if path != root {
 			paths = append(paths, path)
 		}
+		return nil
+	})
+	if err != nil {
+		return err
 	}
 	sort.Strings(paths)
 	for _, path := range paths {

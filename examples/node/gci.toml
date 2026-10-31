@@ -3,7 +3,7 @@ app = "nodeapp"
 [services.web]
 packages = ["nodejs_22"]
 source = "./app"
-install = "npm ci"
+install = "npm install --no-audit --no-fund"
 build = "npm run build"
 command = "node server.js"
 port = 8080

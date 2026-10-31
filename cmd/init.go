@@ -20,8 +20,10 @@ app = "%[1]s"
 [services.web]
 packages = ["nodejs_22"]   # Nix packages (nixpkgs attribute names)
 source = "."               # uploaded and copied to /app
-# install = "npm ci"       # dependency snapshot, rebuilt only when lockfiles change
+# install = "npm install --no-audit --no-fund" # package manager reuses installed dependencies
 # build = "npm run build"  # run once per release, before activation
+reuse = "dependencies"     # dependencies (default), build (all output), or nothing (fresh)
+# migrate = "npm run db:migrate"
 command = "node server.js"
 port = 8080
 health = "/healthz"        # HTTP check before Envoy switches traffic

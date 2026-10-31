@@ -36,12 +36,13 @@ type ServiceState struct {
 }
 
 type Release struct {
-	Key      string    `json:"key"`
-	Instance string    `json:"instance"`
-	Deps     string    `json:"deps,omitempty"`
-	Env      string    `json:"env"`
-	Source   string    `json:"source"`
-	Created  time.Time `json:"created"`
+	Key       string    `json:"key"`
+	ChainKey  string    `json:"chain_key"`
+	Instance  string    `json:"instance"`
+	Installed bool      `json:"installed,omitempty"`
+	Env       string    `json:"env"`
+	Source    string    `json:"source"`
+	Created   time.Time `json:"created"`
 }
 
 // HostConfig is written by bootstrap and read by every later agent call.

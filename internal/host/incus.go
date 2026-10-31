@@ -74,6 +74,18 @@ func getInstance(ctx context.Context, name string) (*instance, error) {
 	return nil, nil
 }
 
+func unsetInstanceConfig(ctx context.Context, name, key string) error {
+	inst, err := getInstance(ctx, name)
+	if err != nil {
+		return err
+	}
+	if inst == nil || inst.Config[key] == "" {
+		return nil
+	}
+	_, err = incus(ctx, "config", "unset", name, key)
+	return err
+}
+
 func waitIPv4(ctx context.Context, name string, timeout time.Duration) (string, error) {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {

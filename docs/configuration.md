@@ -8,9 +8,10 @@ nixpkgs = "github:NixOS/nixpkgs/<rev>"   # optional: pinned by default
 [services.<name>]
 packages       = ["postgresql_16", "python3.withPackages (p: [ p.psycopg ])"]
 source         = "./app"
-install        = "npm ci"
-install_inputs = ["package.json", "package-lock.json"]
+install        = "npm install --no-audit --no-fund"
 build          = "npm run build"
+reuse          = "dependencies"
+migrate        = "python3 server.py migrate"
 command        = "python3 server.py"
 setup          = "..."
 user           = "gci"
@@ -30,9 +31,10 @@ memory         = "1GiB"
 | --- | --- |
 | `packages` | Nix expressions evaluated with `nixpkgs` in scope. gci combines them with `cacert`, `coreutils`, and `bashInteractive` into one `buildEnv` on `PATH`. |
 | `source` | A local directory, relative to `gci.toml`, shipped to a release snapshot and used as the writable `/app` working directory. `.git`, `node_modules`, and `__pycache__` are skipped. |
-| `install` | Optional dependency-install command, such as `npm ci`. Requires `source`; runs once in a stopped dependency snapshot with `sh -e -c` and never receives service `env` or secrets. |
-| `install_inputs` | Source-relative files/directories used to key the dependency snapshot. Paths cannot be absolute, contain `..`, or use globs. Defaults to the known Node.js and Python manifest/lockfile names present at the source root. If none exist, set this explicitly. |
-| `build` | Optional build command run after the full source is copied into a stopped release builder with `sh -e -c`. Requires `source`; receives `env` but not secrets. |
+| `install` | Optional dependency-install command, such as `npm install --no-audit --no-fund`. Requires `source`; runs after source sync in the release builder and never receives service `env` or secrets. The package manager decides what to download or update. |
+| `build` | Optional build command run after source sync and `install`, with `sh -e -c`. Requires `source`; receives service `env` but not secrets. |
+| `reuse` | How a new release build starts: `dependencies` (default) copies the newest matching release's `installed` snapshot; `build` copies the newest matching full release; `nothing` starts from the base image. |
+| `migrate` | Optional shell command run as the service user in `/app`, with the service's runtime environment and secrets, before a changed service is replaced. It runs in a temporary instance with a 10-minute timeout; failures abort activation. Migrations are skipped on no-change deploys and are not allowed with `volumes`. Make migrations idempotent. |
 | `command` | **Required.** The main process, run under systemd as `gci-<name>.service` with `Restart=always`. |
 | `setup` | A shell script run before every start (`ExecStartPre`), for example first-boot initialisation. |
 | `user` | The user to run as. Default `gci`. It is created in the container, and volumes are owned by it. |
@@ -74,17 +76,35 @@ Bootstrap defaults to host ports 80 and 443. ACME also requires the hostname to 
 
 ## Release snapshots
 
-Services with `source` are prepared before any running service is activated. When `install` is set, gci copies only `install_inputs` into a dependency builder and caches the completed dependency tree by the base image, Nix environment, user, install command, and input contents. Source and `build` are then combined in a release snapshot. A source-only change can reuse the dependency snapshot; a dependency-input change installs dependencies again.
+Services with `source` are prepared before any running service is activated. A build chain is keyed by the base-image fingerprint, Nix environment path, user, `install` command, and `reuse` mode. With `reuse = "build"`, `build` and sorted service `env` values are also part of the chain key. Each release is keyed by that chain key, the source hash, `build`, and sorted service `env`.
 
-Deploy activation is a copy-on-write copy of the stopped release, followed by runtime configuration, start, health checking, and the Envoy switch. A failed install/build or a missing secret does not replace a running container. Secrets are not available to install/build commands and do not enter release snapshots.
+For `reuse = "dependencies"`, gci starts from the newest retained release in the same chain that has an `installed` snapshot; that snapshot is created after `install` and before `build`. `reuse = "build"` starts from the newest matching full release, while `reuse = "nothing"` starts from the base image. A changed chain or no matching retained release also starts from the base image. Source files are synced using a manifest stored in the container; only previously copied source paths that have disappeared are removed, so install/build-created files are not swept by path heuristics.
 
-The host retains the current release and the two newest prior releases per service. Each retained release has its own Nix GC root; older release containers and no-longer-referenced dependency snapshots are removed after a successful apply.
+`gci deploy --clean` or `GCI_CLEAN=1`, `true`, or `yes` forces every source service to rebuild from a fresh base, even when its matching release is already cached. Environment values are case-insensitive. This is useful for clean rebuilds and for troubleshooting. For example, a GitHub Actions workflow can request it manually or with `[clean]` in a commit message:
+
+```yaml
+on:
+  push:
+  workflow_dispatch:
+    inputs:
+      clean: { type: boolean, default: false }
+# ...
+- run: gci deploy
+  env:
+    GCI_CLEAN: ${{ inputs.clean || contains(github.event.head_commit.message, '[clean]') }}
+```
+
+With `reuse = "build"`, generated outputs are carried into the next build. This can leave stale artifacts—for example, `tsc` may leave JavaScript for a source file that was removed. Use `reuse = "dependencies"` or a clean deploy when the build must start without prior output.
+
+Deploy activation is a copy-on-write copy of the stopped release, followed by runtime configuration, start, health checking, and the Envoy switch. A failed install/build/migration or a missing secret does not replace a running container. Secrets are not available to install/build commands and do not enter release snapshots.
+
+The host retains the current release and the two newest prior releases per service. Each retained release has its own Nix GC root; older release containers are removed after a successful apply.
 
 ## Storage and build cache
 
-Bootstrap creates a loop-backed Incus btrfs pool named `gci`; adjust its capacity with `gci bootstrap --storage-size 50GiB`. New service, dependency, and release containers use this pool for copy-on-write snapshots. The existing `gci` profile root device is not changed, and the Envoy container stays on its existing pool. If a named application volume already exists in the legacy `default` pool, gci keeps using it, so existing database data survives the migration. New volumes use `gci`.
+Bootstrap creates a loop-backed Incus btrfs pool named `gci`; adjust its capacity with `gci bootstrap --storage-size 50GiB`. New service and release containers use this pool for copy-on-write snapshots. The existing `gci` profile root device is not changed, and the Envoy container stays on its existing pool. If a named application volume already exists in the legacy `default` pool, gci keeps using it, so existing database data survives the migration. New volumes use `gci`.
 
-Dependency and build commands share a persistent per-service `gcicache-<app>-<service>` volume mounted at `/var/cache/gci`. `gci rm --volumes` deletes application volumes from both pools and these cache volumes; without `--volumes`, volumes and caches remain.
+Install and build commands share a persistent per-service `gcicache-<app>-<service>` volume mounted at `/var/cache/gci`. `gci rm --volumes` deletes application volumes from both pools and these cache volumes; without `--volumes`, volumes and caches remain.
 
 `gci rm` also keeps host secrets in `/var/lib/gci/secrets/<app>`; remove them explicitly with `gci secret rm <name>`.
 
