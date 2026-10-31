@@ -55,9 +55,6 @@ func Apply(ctx context.Context, w io.Writer, plan Plan) error {
 	defer unlock()
 
 	cfg := plan.Config
-	if cfg == nil {
-		return fmt.Errorf("missing config in deployment plan")
-	}
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
