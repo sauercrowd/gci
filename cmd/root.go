@@ -14,8 +14,8 @@ import (
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "gci",
-	Short: "Deploy services into Nix-provisioned Incus containers behind Envoy",
+	Use:           "gci",
+	Short:         "Deploy services into Nix-provisioned Incus containers behind Envoy",
 	Long:          "GCI 2.0 is being rebuilt.",
 	SilenceUsage:  true,
 	SilenceErrors: true,
