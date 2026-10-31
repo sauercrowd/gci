@@ -9,14 +9,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// project loads gci.toml (if required) and connects to the selected server.
 func project(cmd *cobra.Command, needConfig bool) (*config.Config, *remote.Host, error) {
 	path, _ := cmd.Flags().GetString("config")
 	name, _ := cmd.Flags().GetString("server")
 	var cfg *config.Config
 	if needConfig || fileExists(path) {
 		var err error
-		cfg, err = config.Load(path)
-		if err != nil {
+		if cfg, err = config.Load(path); err != nil {
 			return nil, nil, err
 		}
 		if name == "" {
@@ -38,8 +38,8 @@ func project(cmd *cobra.Command, needConfig bool) (*config.Config, *remote.Host,
 	return cfg, h, nil
 }
 
-func fileExists(path string) bool {
-	_, err := os.Stat(path)
+func fileExists(p string) bool {
+	_, err := os.Stat(p)
 	return err == nil
 }
 
@@ -48,7 +48,7 @@ func init() {
 	var httpPort int
 	cmd := &cobra.Command{
 		Use:   "bootstrap",
-		Short: "Prepare a host for GCI services",
+		Short: "Prepare a host once: Incus, Nix, network, base image, Envoy front door",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, h, err := project(cmd, false)
 			if err != nil {
