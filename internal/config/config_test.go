@@ -71,6 +71,7 @@ func TestValidate(t *testing.T) {
 		"secret name":                      `app = "a"` + "\n[services.a]\ncommand = \"x\"\nsecrets = { TOKEN = \"Invalid_Name\" }",
 		"also defined in env":              `app = "a"` + "\n[services.a]\ncommand = \"x\"\nenv = { TOKEN = \"x\" }\nsecrets = { TOKEN = \"token\" }",
 		"build require source":             `app = "a"` + "\n[services.a]\ncommand = \"x\"\nbuild = \"npm run build\"",
+		"health_command must not be blank": "app = \"a\"\n[services.a]\ncommand = \"x\"\nhealth_command = \"   \"",
 	}
 	for want, content := range cases {
 		_, err := Load(write(t, content))
@@ -117,14 +118,17 @@ func TestValidateSecretName(t *testing.T) {
 	}
 }
 
-func TestHealthCommandValidation(t *testing.T) {
-	_, err := Load(write(t, `
+func TestHealthCommandAllowsPortlessService(t *testing.T) {
+	cfg, err := Load(write(t, `
 app = "demo"
-[services.web]
-command = "server"
-health_command = "  "
+[services.check]
+command = "sleep infinity"
+health_command = "test -n \"$GCI_APP\""
 `))
-	if err == nil || !strings.Contains(err.Error(), "health_command must not be blank") {
-		t.Fatalf("blank health_command error = %v", err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Services["check"].HealthCommand; got != `test -n "$GCI_APP"` {
+		t.Fatalf("health_command = %q", got)
 	}
 }
