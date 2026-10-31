@@ -76,6 +76,10 @@ func runMigration(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.
 		return err
 	}
 
+	return execMigration(ctx, w, container, name, svc, rev, prepared.secrets)
+}
+
+func execMigration(ctx context.Context, w io.Writer, container, name string, svc *config.Service, rev string, secrets map[string]string) error {
 	args, unit := migrationCommandArgs(container, svc.User, rev, svc.Migrate)
 	migrationCtx, cancel := context.WithTimeout(ctx, migrationTimeout)
 	output := &cappedHealthWriter{limit: maxHealthCommandOutput + maxSecretSize}
@@ -84,7 +88,7 @@ func runMigration(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.
 	err := cmd.Run()
 	ctxErr := migrationCtx.Err()
 	cancel()
-	sanitized := sanitizeHealthOutput(output.String(), prepared.secrets)
+	sanitized := sanitizeHealthOutput(output.String(), secrets)
 	if sanitized != "" {
 		fmt.Fprintf(w, "==> %s: migration output\n%s\n", name, sanitized)
 	}
