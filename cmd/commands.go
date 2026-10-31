@@ -44,9 +44,10 @@ func fileExists(p string) bool {
 }
 
 func init() {
-	var subnet, vipRange, storageSize string
+	var subnet, vipRange string
 	var httpPort int
-	cmd := &cobra.Command{
+	var storageSize string
+	bootstrap := &cobra.Command{
 		Use:   "bootstrap",
 		Short: "Prepare a host once: Incus, Nix, network, base image, Envoy front door",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -61,9 +62,9 @@ func init() {
 			}, nil, cmd.OutOrStdout(), cmd.ErrOrStderr())
 		},
 	}
-	cmd.Flags().StringVar(&subnet, "subnet", "10.77.0.1/24", "gateway address/CIDR of the gci bridge")
-	cmd.Flags().StringVar(&vipRange, "vip-range", "10.77.1.0/24", "service VIP range")
-	cmd.Flags().StringVar(&storageSize, "storage-size", "50GiB", "size of the btrfs-backed pool")
-	cmd.Flags().IntVar(&httpPort, "http-port", 80, "host port Envoy listens on")
-	rootCmd.AddCommand(cmd)
+	bootstrap.Flags().StringVar(&subnet, "subnet", "10.77.0.1/24", "gateway address/CIDR of the gci bridge")
+	bootstrap.Flags().IntVar(&httpPort, "http-port", 80, "host port Envoy listens on")
+	bootstrap.Flags().StringVar(&vipRange, "vip-range", "10.77.1.0/24", "service VIP range, routed to Envoy")
+	bootstrap.Flags().StringVar(&storageSize, "storage-size", "50GiB", "size of the btrfs-backed gci storage pool")
+	rootCmd.AddCommand(bootstrap)
 }

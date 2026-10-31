@@ -17,15 +17,6 @@ type HostConfig struct {
 }
 
 func hostConfigPath() string { return filepath.Join(stateRoot, "host.json") }
-func envoyDir() string       { return filepath.Join(stateRoot, "envoy") }
-
-func (h *HostConfig) save() error {
-	raw, err := json.MarshalIndent(h, "", "  ")
-	if err != nil {
-		return err
-	}
-	return writeFileAtomic(hostConfigPath(), raw, 0o644)
-}
 
 func loadHostConfig() (*HostConfig, error) {
 	raw, err := os.ReadFile(hostConfigPath())
@@ -37,6 +28,16 @@ func loadHostConfig() (*HostConfig, error) {
 		return nil, err
 	}
 	return hc, nil
+}
+
+func envoyDir() string { return filepath.Join(stateRoot, "envoy") }
+
+func (h *HostConfig) save() error {
+	raw, err := json.MarshalIndent(h, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeFileAtomic(hostConfigPath(), raw, 0o644)
 }
 
 func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
@@ -74,8 +75,5 @@ func lock() (func(), error) {
 		f.Close()
 		return nil, err
 	}
-	return func() {
-		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-		_ = f.Close()
-	}, nil
+	return func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN); f.Close() }, nil
 }

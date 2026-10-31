@@ -19,17 +19,17 @@ dynamic_resources:
   lds_config:
     resource_api_version: V3
     path_config_source:
-      path: %s/lds/lds.json
-      watched_directory: { path: %s/lds }
+      path: %[1]s/lds/lds.json
+      watched_directory: { path: %[1]s/lds }
   cds_config:
     resource_api_version: V3
     path_config_source:
-      path: %s/cds/cds.json
-      watched_directory: { path: %s/cds }
+      path: %[1]s/cds/cds.json
+      watched_directory: { path: %[1]s/cds }
 admin:
   address:
-    socket_address: { address: 127.0.0.1, port_value: %d }
-`, envoyConfigMount, envoyConfigMount, envoyConfigMount, envoyConfigMount, adminPort)
+    socket_address: { address: 127.0.0.1, port_value: %[2]d }
+`, envoyConfigMount, adminPort)
 }
 
 func writeEnvoyConfig(port int) error {

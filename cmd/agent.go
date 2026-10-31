@@ -6,7 +6,7 @@ import (
 )
 
 func init() {
-	agent := &cobra.Command{Use: "agent", Hidden: true}
+	agent := &cobra.Command{Use: "agent", Short: "Host-side commands (invoked by the CLI)", Hidden: true}
 	var opts host.BootstrapOptions
 	bootstrap := &cobra.Command{
 		Use: "bootstrap",
