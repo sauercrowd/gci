@@ -59,19 +59,20 @@ func TestValidate(t *testing.T) {
 	cases := map[string]string{
 		"must match":                       `app = "Bad_Name"` + "\n[services.a]\ncommand = \"x\"",
 		"command is required":              `app = "a"` + "\n[services.a]\nport = 1",
+		"require source":                   `app = "a"` + "\n[services.a]\ncommand = \"x\"\ninstall = \"npm install\"",
+		"reuse must be":                    `app = "a"` + "\n[services.a]\ncommand = \"x\"\nreuse = \"invalid\"",
+		"secret environment":               `app = "a"` + "\n[services.a]\ncommand = \"x\"\nsecrets = { \"bad-env\" = \"valid\" }",
+		"environment variable":             `app = "a"` + "\n[services.a]\ncommand = \"x\"\nenv = { \"bad-env\" = \"value\" }",
+		"secret name":                      `app = "a"` + "\n[services.a]\ncommand = \"x\"\nsecrets = { TOKEN = \"Invalid_Name\" }",
+		"also defined in env":              `app = "a"` + "\n[services.a]\ncommand = \"x\"\nenv = { TOKEN = \"x\" }\nsecrets = { TOKEN = \"token\" }",
+		"build require source":             `app = "a"` + "\n[services.a]\ncommand = \"x\"\nbuild = \"npm run build\"",
 		"unknown service":                  `app = "a"` + "\n[services.a]\ncommand = \"x\"\ndepends_on = [\"b\"]",
 		"cycle":                            `app = "a"` + "\n[services.a]\ncommand = \"x\"\ndepends_on = [\"b\"]\n[services.b]\ncommand = \"x\"\ndepends_on = [\"a\"]",
 		"routes require port":              `app = "a"` + "\n[services.a]\ncommand = \"x\"\nroutes = [{}]",
 		"used by both":                     `app = "a"` + "\n[services.a]\ncommand = \"x\"\nvolumes = { v = \"/v\" }\n[services.b]\ncommand = \"x\"\nvolumes = { v = \"/w\" }",
 		"health requires port":             `app = "a"` + "\n[services.a]\ncommand = \"x\"\nhealth = \"/h\"",
-		"environment variable":             `app = "a"` + "\n[services.a]\ncommand = \"x\"\nenv = { \"bad-env\" = \"value\" }",
-		"secret environment":               `app = "a"` + "\n[services.a]\ncommand = \"x\"\nsecrets = { \"bad-env\" = \"valid\" }",
-		"secret name":                      `app = "a"` + "\n[services.a]\ncommand = \"x\"\nsecrets = { TOKEN = \"Invalid_Name\" }",
-		"also defined in env":              `app = "a"` + "\n[services.a]\ncommand = \"x\"\nenv = { TOKEN = \"x\" }\nsecrets = { TOKEN = \"token\" }",
-		"reuse must be":                    `app = "a"` + "\n[services.a]\ncommand = \"x\"\nreuse = \"lockfile\"",
-		"install and build require source": `app = "a"` + "\n[services.a]\ncommand = \"x\"\ninstall = \"npm install\"",
-		"build require source":             `app = "a"` + "\n[services.a]\ncommand = \"x\"\nbuild = \"npm run build\"",
-		"health_command must not be blank": "app = \"a\"\n[services.a]\ncommand = \"x\"\nhealth_command = \"   \"",
+		"health_command must not be blank": `app = "a"` + "\n[services.a]\ncommand = \"x\"\nhealth_command = \"   \"",
+		"missing in the target":            `app = "a"` + "\n[services.a]\ncommand = \"x\"\nimage = \"nginx\"",
 	}
 	for want, content := range cases {
 		_, err := Load(write(t, content))
@@ -81,31 +82,18 @@ func TestValidate(t *testing.T) {
 	}
 }
 
-func TestMigrateWithVolumesIsAllowed(t *testing.T) {
+func TestHealthCommandAllowsPortlessService(t *testing.T) {
 	cfg, err := Load(write(t, `
 app = "demo"
-[services.db]
-command = "postgres"
-migrate = "migrate"
-volumes = { data = "/var/lib/data" }
+[services.check]
+command = "sleep infinity"
+health_command = "test -n \"$GCI_APP\""
 `))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.Services["db"].Stateful() {
-		t.Fatal("service with volumes is not stateful")
-	}
-}
-
-func TestMigrateCommandMustNotBeBlank(t *testing.T) {
-	_, err := Load(write(t, `
-app = "demo"
-[services.web]
-command = "node server.js"
-migrate = "   "
-`))
-	if err == nil || !strings.Contains(err.Error(), "migrate must not be blank") {
-		t.Fatalf("blank migrate error = %v", err)
+	if got := cfg.Services["check"].HealthCommand; got != `test -n "$GCI_APP"` {
+		t.Fatalf("health_command = %q", got)
 	}
 }
 
@@ -133,6 +121,34 @@ reuse = "lockfile"
 	}
 }
 
+func TestMigrateWithVolumesIsAllowed(t *testing.T) {
+	cfg, err := Load(write(t, `
+app = "demo"
+[services.db]
+command = "postgres"
+migrate = "migrate"
+volumes = { data = "/var/lib/data" }
+`))
+	if err != nil {
+		t.Fatalf("migrate with volumes: %v", err)
+	}
+	if !cfg.Services["db"].Stateful() {
+		t.Fatal("service with volumes is not stateful")
+	}
+}
+
+func TestMigrateCommandMustNotBeBlank(t *testing.T) {
+	_, err := Load(write(t, `
+app = "demo"
+[services.web]
+command = "server"
+migrate = "   "
+`))
+	if err == nil || !strings.Contains(err.Error(), "migrate must not be blank") {
+		t.Fatalf("blank migrate error = %v", err)
+	}
+}
+
 func TestValidateSecretName(t *testing.T) {
 	for _, name := range []string{"ok", "secret.1", "secret-name_2"} {
 		if err := ValidateSecretName(name); err != nil {
@@ -143,20 +159,5 @@ func TestValidateSecretName(t *testing.T) {
 		if err := ValidateSecretName(name); err == nil {
 			t.Errorf("%q unexpectedly valid", name)
 		}
-	}
-}
-
-func TestHealthCommandAllowsPortlessService(t *testing.T) {
-	cfg, err := Load(write(t, `
-app = "demo"
-[services.check]
-command = "sleep infinity"
-health_command = "test -n \"$GCI_APP\""
-`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := cfg.Services["check"].HealthCommand; got != `test -n "$GCI_APP"` {
-		t.Fatalf("health_command = %q", got)
 	}
 }
