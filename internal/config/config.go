@@ -141,6 +141,11 @@ func (c *Config) Validate() error {
 		if svc.Migrate != "" && strings.TrimSpace(svc.Migrate) == "" {
 			return fmt.Errorf("service %q: migrate must not be blank", name)
 		}
+		for env := range svc.Env {
+			if !envNameRe.MatchString(env) {
+				return fmt.Errorf("service %q: environment variable %q is invalid", name, env)
+			}
+		}
 		for env, secret := range svc.Secrets {
 			if !envNameRe.MatchString(env) {
 				return fmt.Errorf("service %q: secret environment variable %q is invalid", name, env)
@@ -150,11 +155,6 @@ func (c *Config) Validate() error {
 			}
 			if _, ok := svc.Env[env]; ok {
 				return fmt.Errorf("service %q: secret environment variable %q is also defined in env", name, env)
-			}
-		}
-		for env := range svc.Env {
-			if !envNameRe.MatchString(env) {
-				return fmt.Errorf("service %q: environment variable %q is invalid", name, env)
 			}
 		}
 		if len(svc.Routes) > 0 && svc.Port == 0 {

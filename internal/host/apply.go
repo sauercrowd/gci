@@ -173,9 +173,10 @@ func Apply(ctx context.Context, w io.Writer, plan Plan) error {
 		if err != nil {
 			return fmt.Errorf("%s: secret digest: %w", name, err)
 		}
-		resolved[name], digests[name] = values, digest
+		resolved[name] = values
+		digests[name] = digest
 	}
-	if len(missing) > 0 {
+	if len(missing) != 0 {
 		return fmt.Errorf("missing secrets: %s", strings.Join(missing, "; "))
 	}
 
