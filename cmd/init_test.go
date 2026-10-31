@@ -9,6 +9,19 @@ import (
 	"github.com/sauercrowd/gci/internal/config"
 )
 
+func TestCleanEnabled(t *testing.T) {
+	for _, value := range []string{"1", "true", "TRUE", " yes "} {
+		if !cleanEnabled(value) {
+			t.Errorf("cleanEnabled(%q) = false", value)
+		}
+	}
+	for _, value := range []string{"", "0", "false", "no"} {
+		if cleanEnabled(value) {
+			t.Errorf("cleanEnabled(%q) = true", value)
+		}
+	}
+}
+
 func TestDefaultAppName(t *testing.T) {
 	if got := defaultAppName("/src/My_Project"); got != "my-project" {
 		t.Fatalf("defaultAppName() = %q", got)

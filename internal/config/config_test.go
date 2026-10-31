@@ -38,7 +38,7 @@ command = "cache"
 		t.Fatal("nixpkgs default not applied")
 	}
 	web := cfg.Services["web"]
-	if web.User != "gci" || web.Routes[0] != (Route{Host: "*", Prefix: "/"}) {
+	if web.User != "gci" || web.Reuse != "dependencies" || web.Routes[0] != (Route{Host: "*", Prefix: "/"}) {
 		t.Fatalf("defaults not applied: %+v", web)
 	}
 	if !cfg.Services["db"].Stateful() || web.Stateful() {
@@ -55,20 +55,39 @@ command = "cache"
 
 func TestValidate(t *testing.T) {
 	cases := map[string]string{
-		"must match":                         `app = "Bad_Name"` + "\n[services.a]\ncommand = \"x\"",
-		"command is required":                `app = "a"` + "\n[services.a]\nport = 1",
-		"unknown service":                    `app = "a"` + "\n[services.a]\ncommand = \"x\"\ndepends_on = [\"b\"]",
-		"cycle":                              `app = "a"` + "\n[services.a]\ncommand = \"x\"\ndepends_on = [\"b\"]\n[services.b]\ncommand = \"x\"\ndepends_on = [\"a\"]",
-		"routes require port":                `app = "a"` + "\n[services.a]\ncommand = \"x\"\nroutes = [{}]",
-		"used by both":                       `app = "a"` + "\n[services.a]\ncommand = \"x\"\nvolumes = { v = \"/v\" }\n[services.b]\ncommand = \"x\"\nvolumes = { v = \"/w\" }",
-		"health requires port":               `app = "a"` + "\n[services.a]\ncommand = \"x\"\nhealth = \"/h\"",
-		"environment variable":               `app = "a"` + "\n[services.a]\ncommand = \"x\"\nenv = { \"bad-env\" = \"value\" }",
-		"fields in the document are missing": `app = "a"` + "\n[services.a]\ncommand = \"x\"\nsource = \"app\"",
+		"must match":                       `app = "Bad_Name"` + "\n[services.a]\ncommand = \"x\"",
+		"command is required":              `app = "a"` + "\n[services.a]\nport = 1",
+		"unknown service":                  `app = "a"` + "\n[services.a]\ncommand = \"x\"\ndepends_on = [\"b\"]",
+		"cycle":                            `app = "a"` + "\n[services.a]\ncommand = \"x\"\ndepends_on = [\"b\"]\n[services.b]\ncommand = \"x\"\ndepends_on = [\"a\"]",
+		"routes require port":              `app = "a"` + "\n[services.a]\ncommand = \"x\"\nroutes = [{}]",
+		"used by both":                     `app = "a"` + "\n[services.a]\ncommand = \"x\"\nvolumes = { v = \"/v\" }\n[services.b]\ncommand = \"x\"\nvolumes = { v = \"/w\" }",
+		"health requires port":             `app = "a"` + "\n[services.a]\ncommand = \"x\"\nhealth = \"/h\"",
+		"environment variable":             `app = "a"` + "\n[services.a]\ncommand = \"x\"\nenv = { \"bad-env\" = \"value\" }",
+		"reuse must be":                    `app = "a"` + "\n[services.a]\ncommand = \"x\"\nreuse = \"lockfile\"",
+		"install and build require source": `app = "a"` + "\n[services.a]\ncommand = \"x\"\ninstall = \"npm install\"",
 	}
 	for want, content := range cases {
 		_, err := Load(write(t, content))
 		if err == nil || !strings.Contains(strings.ToLower(err.Error()), want) {
 			t.Errorf("%q: got %v", want, err)
 		}
+	}
+}
+
+func TestSourceBuildConfig(t *testing.T) {
+	p := write(t, `
+app = "demo"
+[services.web]
+command = "node server.js"
+source = "./app"
+install = "npm install"
+build = "npm run build"
+`)
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := cfg.Services["web"].Source, filepath.Join(filepath.Dir(p), "app"); got != want {
+		t.Fatalf("source = %q, want %q", got, want)
 	}
 }

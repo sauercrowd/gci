@@ -20,6 +20,8 @@ command = "python3 -m http.server 8080 --directory /home/gci"
 port = 8080
 health = "/"
 routes = [{ host = "*", prefix = "/" }]
+# Reuse "dependencies", "build", or "nothing" between source builds.
+reuse = "dependencies"
 `
 
 var nonNameChars = regexp.MustCompile(`[^a-z0-9-]+`)

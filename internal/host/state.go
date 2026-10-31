@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"syscall"
+	"time"
 
 	"github.com/sauercrowd/gci/internal/config"
 )
@@ -18,6 +19,7 @@ const stateRoot = "/var/lib/gci"
 type AppState struct {
 	App      string                   `json:"app"`
 	Services map[string]*ServiceState `json:"services"`
+	Releases map[string][]*Release    `json:"releases,omitempty"`
 }
 
 type ServiceState struct {
@@ -25,11 +27,22 @@ type ServiceState struct {
 	IP        string            `json:"ip"`
 	Rev       string            `json:"rev"`
 	Env       string            `json:"env"`
+	Release   string            `json:"release,omitempty"`
 	VIP       string            `json:"vip,omitempty"`
 	HTTP      bool              `json:"http,omitempty"`
 	Port      int               `json:"port,omitempty"`
 	Routes    []config.Route    `json:"routes,omitempty"`
 	Volumes   map[string]string `json:"volumes,omitempty"`
+}
+
+type Release struct {
+	Key       string    `json:"key"`
+	ChainKey  string    `json:"chain_key"`
+	Instance  string    `json:"instance"`
+	Installed bool      `json:"installed,omitempty"`
+	Env       string    `json:"env"`
+	Source    string    `json:"source"`
+	Created   time.Time `json:"created"`
 }
 
 // HostConfig is written by bootstrap and read by every later agent call.
@@ -51,7 +64,7 @@ func loadHostConfig() (*HostConfig, error) {
 		return nil, err
 	}
 	if hc.StoragePool == "" {
-		return nil, fmt.Errorf("host configuration has no storage pool; re-run `gci bootstrap`")
+		return nil, fmt.Errorf("host was bootstrapped before release snapshots; re-run `gci bootstrap`")
 	}
 	return hc, nil
 }
@@ -95,6 +108,13 @@ func allocateVIP(hc *HostConfig, st *AppState) (string, error) {
 func appDir(app string) string    { return filepath.Join(stateRoot, "apps", app) }
 func statePath(app string) string { return filepath.Join(appDir(app), "state.json") }
 func envoyDir() string            { return filepath.Join(stateRoot, "envoy") }
+func releaseRoot(app, svc, key string) string {
+	return filepath.Join(appDir(app), "releases", svc, key[:12])
+}
+func sourceDir(app, svc, hash string) string {
+	return filepath.Join(appDir(app), "sources", svc, hash)
+}
+
 func loadState(app string) (*AppState, error) {
 	st := &AppState{App: app, Services: map[string]*ServiceState{}}
 	raw, err := os.ReadFile(statePath(app))

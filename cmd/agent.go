@@ -18,6 +18,19 @@ func init() {
 		Args:               cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			switch args[0] {
+			case "has-source":
+				if len(args) != 4 {
+					return fmt.Errorf("usage: gci agent has-source <app> <service> <hash>")
+				}
+				if !host.HasSource(args[1], args[2], args[3]) {
+					return fmt.Errorf("source is not present")
+				}
+				return nil
+			case "receive-source":
+				if len(args) != 4 {
+					return fmt.Errorf("usage: gci agent receive-source <app> <service> <hash>")
+				}
+				return host.ReceiveSource(args[1], args[2], args[3], cmd.InOrStdin())
 			case "apply":
 				var plan host.Plan
 				if err := json.NewDecoder(cmd.InOrStdin()).Decode(&plan); err != nil {
