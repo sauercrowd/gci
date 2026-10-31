@@ -75,7 +75,6 @@ func init() {
 	deploy := &cobra.Command{
 		Use:   "deploy",
 		Short: "Deploy the services in gci.toml",
-		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, h, err := project(cmd, true)
 			if err != nil {
@@ -113,7 +112,6 @@ func init() {
 	status := &cobra.Command{
 		Use:   "status",
 		Short: "Show the services of this app",
-		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, h, err := project(cmd, true)
 			if err != nil {
@@ -136,11 +134,11 @@ func init() {
 				return err
 			}
 			defer h.Close()
-			agentArgs := []string{"logs", cfg.App, args[0], "-n", strconv.Itoa(lines)}
+			a := []string{"logs", cfg.App, args[0], "-n", strconv.Itoa(lines)}
 			if follow {
-				agentArgs = append(agentArgs, "-f")
+				a = append(a, "-f")
 			}
-			return h.Agent(cmd.Context(), agentArgs, nil, cmd.OutOrStdout(), cmd.ErrOrStderr())
+			return h.Agent(cmd.Context(), a, nil, cmd.OutOrStdout(), cmd.ErrOrStderr())
 		},
 	}
 	logs.Flags().IntVarP(&lines, "lines", "n", 100, "number of lines")
@@ -149,19 +147,18 @@ func init() {
 	var volumes bool
 	rm := &cobra.Command{
 		Use:   "rm",
-		Short: "Remove all containers of this app",
-		Args:  cobra.NoArgs,
+		Short: "Remove all containers of this app (volumes are kept unless --volumes)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, h, err := project(cmd, true)
 			if err != nil {
 				return err
 			}
 			defer h.Close()
-			agentArgs := []string{"rm", cfg.App}
+			a := []string{"rm", cfg.App}
 			if volumes {
-				agentArgs = append(agentArgs, "--volumes")
+				a = append(a, "--volumes")
 			}
-			return h.Agent(cmd.Context(), agentArgs, nil, cmd.OutOrStdout(), cmd.ErrOrStderr())
+			return h.Agent(cmd.Context(), a, nil, cmd.OutOrStdout(), cmd.ErrOrStderr())
 		},
 	}
 	rm.Flags().BoolVar(&volumes, "volumes", false, "also delete the app's volumes (data loss)")
