@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/netip"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -11,6 +12,7 @@ import (
 )
 
 const envoyConfigMount = "/etc/gci-envoy"
+const envoyHTTPSListenPort = 10443
 
 func envoyBootstrap(adminPort int) string {
 	return fmt.Sprintf(`node:
@@ -34,6 +36,9 @@ admin:
 }
 
 type any_ = map[string]any
+type envoyRoute struct {
+	prefix, cluster string
+}
 
 func clusterName(app, svc string) string { return app + "_" + svc }
 
@@ -42,11 +47,13 @@ func socketAddress(ip string, port int) any_ {
 }
 
 // envoyResources renders the LDS and CDS documents for every app on this host.
-func envoyResources(states []*AppState, httpPort int, envoyIP string) (lds, cds []byte, err error) {
-	type route struct {
-		prefix, cluster string
+func envoyResources(states []*AppState, httpPort, httpsPort int, gateway, envoyIP string) (lds, cds []byte, err error) {
+	type hostVHost struct {
+		routes []envoyRoute
+		tls    RouteTLSSettings
 	}
-	vhosts := map[string][]route{}
+	vhosts := map[string]*hostVHost{}
+	wildcardConfigured := false
 	var clusters, listeners, dnsNames []any
 	for _, st := range states {
 		svcs := make([]string, 0, len(st.Services))
@@ -78,61 +85,112 @@ func envoyResources(states []*AppState, httpPort int, envoyIP string) (lds, cds 
 				listeners = append(listeners, serviceListener(st.App, name, s, cn))
 			}
 			for _, r := range s.Routes {
-				vhosts[r.Host] = append(vhosts[r.Host], route{r.Prefix, cn})
+				if r.Host == "*" {
+					wildcardConfigured = true
+				}
+				vh := vhosts[r.Host]
+				if vh == nil {
+					vh = &hostVHost{tls: tlsSettings(r)}
+					vhosts[r.Host] = vh
+				}
+				vh.routes = append(vh.routes, envoyRoute{r.Prefix, cn})
 			}
 		}
 	}
 	if _, ok := vhosts["*"]; !ok {
-		vhosts["*"] = nil
+		vhosts["*"] = &hostVHost{tls: RouteTLSSettings{Mode: "self-signed"}}
 	}
 	hosts := make([]string, 0, len(vhosts))
 	for h := range vhosts {
 		hosts = append(hosts, h)
 	}
 	sort.Strings(hosts)
-	var vhs []any
+	var httpVHosts []any
 	for _, h := range hosts {
-		rs := vhosts[h]
-		sort.SliceStable(rs, func(i, j int) bool { return len(rs[i].prefix) > len(rs[j].prefix) })
-		var routes []any
-		for _, r := range rs {
-			routes = append(routes, any_{
-				"match": any_{"prefix": r.prefix},
-				"route": any_{
-					"cluster":         r.cluster,
-					"timeout":         "60s",
-					"upgrade_configs": []any{any_{"upgrade_type": "websocket"}},
-				},
-			})
+		vh := vhosts[h]
+		routes := make([]any, 0, len(vh.routes)+2)
+		routes = append(routes, acmeChallengeRoute())
+		if h == "*" && !wildcardConfigured {
+			routes = append(routes, noRouteRoute())
+		} else if vh.tls.Mode == "off" {
+			routes = append(routes, renderServiceRoutes(vh.routes)...)
+		} else {
+			redirect := any_{"https_redirect": true}
+			if httpsPort != 443 {
+				redirect["port_redirect"] = httpsPort
+			}
+			routes = append(routes, any_{"match": any_{"prefix": "/"}, "redirect": redirect})
+			routes = append(routes, noRouteRoute())
 		}
-		routes = append(routes, any_{
-			"match":           any_{"prefix": "/"},
-			"direct_response": any_{"status": 404, "body": any_{"inline_string": "no route\n"}},
-		})
-		vhs = append(vhs, any_{"name": vhostName(h), "domains": []string{h}, "routes": routes})
+		if h != "*" || wildcardConfigured {
+			routes = append(routes, noRouteRoute())
+		}
+		httpVHosts = append(httpVHosts, any_{"name": vhostName(h), "domains": []string{h}, "routes": routes})
 	}
-	listener := any_{
+	acmeCluster := any_{
+		"@type":           "type.googleapis.com/envoy.config.cluster.v3.Cluster",
+		"name":            "gci_acme",
+		"type":            "STATIC",
+		"connect_timeout": "2s",
+		"load_assignment": any_{
+			"cluster_name": "gci_acme",
+			"endpoints": []any{any_{"lb_endpoints": []any{
+				any_{"endpoint": any_{"address": socketAddress(gateway, 8402)}},
+			}}},
+		},
+	}
+	clusters = append(clusters, acmeCluster)
+	httpListener := any_{
 		"@type":   "type.googleapis.com/envoy.config.listener.v3.Listener",
 		"name":    "http",
 		"address": socketAddress("0.0.0.0", httpPort),
 		"filter_chains": []any{any_{"filters": []any{any_{
-			"name": "envoy.filters.network.http_connection_manager",
-			"typed_config": any_{
-				"@type":        "type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager",
-				"stat_prefix":  "http",
-				"access_log":   accessLog(),
-				"route_config": any_{"name": "gci", "virtual_hosts": vhs},
-				"http_filters": []any{any_{
-					"name":         "envoy.filters.http.router",
-					"typed_config": any_{"@type": "type.googleapis.com/envoy.extensions.filters.http.router.v3.Router"},
-				}},
-			},
+			"name":         "envoy.filters.network.http_connection_manager",
+			"typed_config": edgeHTTPManager("http", httpVHosts, false),
 		}}}},
+	}
+	httpsFilterChains := make([]any, 0, len(hosts))
+	for _, h := range hosts {
+		if h == "*" || vhosts[h].tls.Mode == "off" {
+			continue
+		}
+		vh := renderTLSVHost(h, vhosts[h].routes)
+		httpsFilterChains = append(httpsFilterChains, any_{
+			"filter_chain_match": any_{"server_names": []string{h}},
+			"transport_socket":   downstreamTLSSocket(h),
+			"filters": []any{any_{
+				"name":         "envoy.filters.network.http_connection_manager",
+				"typed_config": edgeHTTPManager("https_"+vhostName(h), []any{vh}, true),
+			}},
+		})
+	}
+	defaultVHosts := []any{}
+	if wildcard := vhosts["*"]; wildcardConfigured && wildcard.tls.Mode != "off" {
+		defaultVHosts = append(defaultVHosts, renderTLSVHost("*", wildcard.routes))
+	} else {
+		defaultVHosts = append(defaultVHosts, noRouteVHost())
+	}
+	httpsListener := any_{
+		"@type":   "type.googleapis.com/envoy.config.listener.v3.Listener",
+		"name":    "https",
+		"address": socketAddress("0.0.0.0", envoyHTTPSListenPort),
+		"listener_filters": []any{any_{
+			"name":         "envoy.filters.listener.tls_inspector",
+			"typed_config": any_{"@type": "type.googleapis.com/envoy.extensions.filters.listener.tls_inspector.v3.TlsInspector"},
+		}},
+		"filter_chains": httpsFilterChains,
+		"default_filter_chain": any_{
+			"transport_socket": downstreamTLSSocket("*"),
+			"filters": []any{any_{
+				"name":         "envoy.filters.network.http_connection_manager",
+				"typed_config": edgeHTTPManager("https_default", defaultVHosts, true),
+			}},
+		},
 	}
 	if clusters == nil {
 		clusters = []any{}
 	}
-	listeners = append([]any{listener}, listeners...)
+	listeners = append([]any{httpListener, httpsListener}, listeners...)
 	if envoyIP != "" {
 		if dnsNames == nil {
 			dnsNames = []any{}
@@ -157,6 +215,87 @@ func envoyResources(states []*AppState, httpPort int, envoyIP string) (lds, cds 
 	}
 	cds, err = json.MarshalIndent(any_{"resources": clusters}, "", "  ")
 	return lds, cds, err
+}
+
+func acmeChallengeRoute() any {
+	return any_{
+		"match": any_{"prefix": "/.well-known/acme-challenge/"},
+		"route": any_{"cluster": "gci_acme", "timeout": "10s"},
+	}
+}
+
+func renderServiceRoutes(routes []envoyRoute) []any {
+	sort.SliceStable(routes, func(i, j int) bool { return len(routes[i].prefix) > len(routes[j].prefix) })
+	var rendered []any
+	for _, r := range routes {
+		rendered = append(rendered, any_{
+			"match": any_{"prefix": r.prefix},
+			"route": any_{
+				"cluster":         r.cluster,
+				"timeout":         "60s",
+				"upgrade_configs": []any{any_{"upgrade_type": "websocket"}},
+			},
+		})
+	}
+	return rendered
+}
+
+func noRouteRoute() any {
+	return any_{"match": any_{"prefix": "/"}, "direct_response": any_{"status": 404, "body": any_{"inline_string": "no route\n"}}}
+}
+
+func noRouteVHost() any {
+	return any_{"name": "no_route", "domains": []string{"*"}, "routes": []any{noRouteRoute()}}
+}
+
+func renderTLSVHost(host string, routes []envoyRoute) any {
+	rendered := renderServiceRoutes(routes)
+	rendered = append(rendered, noRouteRoute())
+	return any_{"name": vhostName(host), "domains": []string{host}, "routes": rendered}
+}
+
+func edgeHTTPManager(name string, virtualHosts []any, https bool) any_ {
+	manager := any_{
+		"@type":               "type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager",
+		"stat_prefix":         name,
+		"access_log":          accessLog(),
+		"strip_any_host_port": true,
+		"route_config":        any_{"name": name, "virtual_hosts": virtualHosts},
+		"http_filters": []any{any_{
+			"name":         "envoy.filters.http.router",
+			"typed_config": any_{"@type": "type.googleapis.com/envoy.extensions.filters.http.router.v3.Router"},
+		}},
+	}
+	if https {
+		manager["request_headers_to_add"] = []any{any_{
+			"header":        any_{"key": "x-forwarded-proto", "value": "https"},
+			"append_action": "OVERWRITE_IF_EXISTS_OR_ADD",
+		}}
+	}
+	return manager
+}
+
+func downstreamTLSSocket(host string) any_ {
+	name := certificateName(host)
+	return any_{
+		"name": "envoy.transport_sockets.tls",
+		"typed_config": any_{
+			"@type": "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext",
+			"common_tls_context": any_{
+				"alpn_protocols": []string{"h2", "http/1.1"},
+				"tls_certificate_sds_secret_configs": []any{any_{
+					"name": name,
+					"sds_config": any_{
+						"resource_api_version": "V3",
+						"path_config_source": any_{
+							"path":              "/etc/gci/certs/" + name + ".json",
+							"watched_directory": any_{"path": "/etc/gci/certs"},
+						},
+					},
+				}},
+			},
+		},
+	}
 }
 
 // internalName is the DNS name other services use, e.g. postgres.platform.internal.
@@ -222,16 +361,27 @@ func vhostName(host string) string {
 
 // writeEnvoyConfig regenerates the front door config; Envoy hot-reloads it.
 // CDS is written first so new clusters exist before routes reference them.
-func writeEnvoyConfig(httpPort int) error {
+func writeEnvoyConfig(ctx context.Context) error {
 	states, err := loadAllStates()
 	if err != nil {
 		return err
 	}
-	envoyIP := ""
-	if hc, err := loadHostConfig(); err == nil {
-		envoyIP = hc.EnvoyIP
+	hc, err := loadHostConfig()
+	if err != nil {
+		return err
 	}
-	lds, cds, err := envoyResources(states, httpPort, envoyIP)
+	gateway, err := netip.ParsePrefix(hc.Subnet)
+	if err != nil {
+		return fmt.Errorf("host subnet: %w", err)
+	}
+	certificates, err := certificatesForStates(states)
+	if err != nil {
+		return err
+	}
+	if err := pushSDSCertificates(ctx, certificates); err != nil {
+		return err
+	}
+	lds, cds, err := envoyResources(states, envoyListenPort, hc.HTTPSPort, gateway.Addr().String(), hc.EnvoyIP)
 	if err != nil {
 		return err
 	}

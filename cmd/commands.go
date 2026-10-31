@@ -50,8 +50,9 @@ func fileExists(p string) bool {
 
 func init() {
 	var subnet, vipRange string
-	var httpPort int
+	var httpPort, httpsPort int
 	var storageSize string
+	var acmeEmail, acmeDirectory, acmeCABundle string
 	bootstrap := &cobra.Command{
 		Use:   "bootstrap",
 		Short: "Prepare a host once: Incus, Nix, network, base image, Envoy front door",
@@ -61,14 +62,24 @@ func init() {
 				return err
 			}
 			defer h.Close()
-			return h.Agent(cmd.Context(), []string{"bootstrap", "--subnet", subnet, "--http-port", strconv.Itoa(httpPort), "--vip-range", vipRange, "--storage-size", storageSize},
+			return h.Agent(cmd.Context(), []string{
+				"bootstrap", "--subnet", subnet,
+				"--http-port", strconv.Itoa(httpPort), "--https-port", strconv.Itoa(httpsPort),
+				"--vip-range", vipRange, "--storage-size", storageSize,
+				"--acme-email", acmeEmail, "--acme-directory", acmeDirectory,
+				"--acme-ca-bundle", acmeCABundle,
+			},
 				nil, cmd.OutOrStdout(), cmd.ErrOrStderr())
 		},
 	}
 	bootstrap.Flags().StringVar(&subnet, "subnet", "10.77.0.1/24", "gateway address/CIDR of the gci bridge")
 	bootstrap.Flags().IntVar(&httpPort, "http-port", 80, "host port Envoy listens on")
+	bootstrap.Flags().IntVar(&httpsPort, "https-port", 443, "host HTTPS port Envoy listens on")
 	bootstrap.Flags().StringVar(&vipRange, "vip-range", "10.77.1.0/24", "service VIP range, routed to Envoy")
 	bootstrap.Flags().StringVar(&storageSize, "storage-size", "50GiB", "size of the btrfs-backed gci storage pool")
+	bootstrap.Flags().StringVar(&acmeEmail, "acme-email", "", "optional ACME account email")
+	bootstrap.Flags().StringVar(&acmeDirectory, "acme-directory", host.DefaultACMEDirectory, "ACME directory URL")
+	bootstrap.Flags().StringVar(&acmeCABundle, "acme-ca-bundle", "", "host PEM bundle trusted for the ACME directory")
 
 	deploy := &cobra.Command{
 		Use:   "deploy",

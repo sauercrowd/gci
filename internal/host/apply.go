@@ -136,6 +136,13 @@ func Apply(ctx context.Context, w io.Writer, plan Plan) error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
+	allStates, err := loadAllStates()
+	if err != nil {
+		return err
+	}
+	if err := validateCrossAppRoutes(allStates, cfg); err != nil {
+		return err
+	}
 	st, err := loadState(cfg.App)
 	if err != nil {
 		return err
@@ -178,6 +185,13 @@ func Apply(ctx context.Context, w io.Writer, plan Plan) error {
 	if len(missing) != 0 {
 		return fmt.Errorf("missing secrets: %s", strings.Join(missing, "; "))
 	}
+	customMissing, err := validateCustomRoutes(cfg.App, cfg)
+	if err != nil {
+		return err
+	}
+	if len(customMissing) != 0 {
+		return fmt.Errorf("missing secrets: %s", strings.Join(customMissing, "; "))
+	}
 
 	baseFP := ""
 	for _, name := range order {
@@ -212,7 +226,7 @@ func Apply(ctx context.Context, w io.Writer, plan Plan) error {
 	}
 
 	var changed []string
-	if err := writeEnvoyConfig(envoyListenPort); err != nil {
+	if err := writeEnvoyConfig(ctx); err != nil {
 		return err
 	}
 	for _, name := range order {
@@ -222,7 +236,7 @@ func Apply(ctx context.Context, w io.Writer, plan Plan) error {
 		}
 		if did {
 			changed = append(changed, name)
-			if err := writeEnvoyConfig(envoyListenPort); err != nil {
+			if err := writeEnvoyConfig(ctx); err != nil {
 				return err
 			}
 		}
@@ -254,7 +268,10 @@ func Apply(ctx context.Context, w io.Writer, plan Plan) error {
 	if err := st.save(); err != nil {
 		return err
 	}
-	if err := writeEnvoyConfig(envoyListenPort); err != nil {
+	if err := writeEnvoyConfig(ctx); err != nil {
+		return err
+	}
+	if err := issueACMECertificates(ctx, w, hc, cfg); err != nil {
 		return err
 	}
 	if err := deleteOrphans(ctx, st); err != nil {
@@ -502,7 +519,7 @@ func applyService(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.
 	if err := st.save(); err != nil {
 		return false, err
 	}
-	if err := writeEnvoyConfig(envoyListenPort); err != nil {
+	if err := writeEnvoyConfig(ctx); err != nil {
 		return false, err
 	}
 	if cur != nil {

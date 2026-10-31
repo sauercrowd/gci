@@ -46,9 +46,15 @@ type Release struct {
 
 // HostConfig is written by bootstrap and read by every later agent call.
 type HostConfig struct {
-	EnvoyIP     string `json:"envoy_ip"`
-	VIPRange    string `json:"vip_range"`
-	StoragePool string `json:"storage_pool"`
+	EnvoyIP       string `json:"envoy_ip"`
+	VIPRange      string `json:"vip_range"`
+	StoragePool   string `json:"storage_pool"`
+	Subnet        string `json:"subnet"`
+	HTTPPort      int    `json:"http_port"`
+	HTTPSPort     int    `json:"https_port"`
+	ACMEEmail     string `json:"acme_email,omitempty"`
+	ACMEDirectory string `json:"acme_directory"`
+	ACMECABundle  string `json:"acme_ca_bundle,omitempty"`
 }
 
 func hostConfigPath() string { return filepath.Join(stateRoot, "host.json") }
@@ -64,6 +70,12 @@ func loadHostConfig() (*HostConfig, error) {
 	}
 	if hc.StoragePool == "" {
 		return nil, fmt.Errorf("host was bootstrapped before release snapshots; re-run `gci bootstrap`")
+	}
+	if hc.HTTPSPort == 0 {
+		return nil, fmt.Errorf("host was bootstrapped before HTTPS support; re-run `gci bootstrap`")
+	}
+	if hc.ACMEDirectory == "" {
+		hc.ACMEDirectory = DefaultACMEDirectory
 	}
 	return hc, nil
 }
