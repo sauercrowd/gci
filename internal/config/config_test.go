@@ -72,3 +72,15 @@ func TestValidate(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateEnvironmentName(t *testing.T) {
+	cfg := &Config{
+		App: "demo",
+		Services: map[string]*Service{
+			"web": {Command: "run", Env: map[string]string{"bad-name": "value"}},
+		},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected invalid environment name to fail")
+	}
+}
