@@ -22,6 +22,7 @@ health = "/"
 routes = [{ host = "*", prefix = "/" }]
 # Reuse "dependencies", "build", or "nothing" between source builds.
 reuse = "dependencies"
+# migrate = "npm run db:migrate"
 `
 
 var nonNameChars = regexp.MustCompile(`[^a-z0-9-]+`)

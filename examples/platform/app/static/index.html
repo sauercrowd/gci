@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>gci platform demo</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 4rem auto; padding: 0 1rem; }
+    dl { display: grid; grid-template-columns: max-content 1fr; gap: .4rem 1rem; }
+    dt { color: #666; }
+    button { font-size: 1rem; padding: .5rem 1rem; }
+  </style>
+</head>
+<body>
+  <h1>gci platform demo</h1>
+  <p>Served by the <code>web</code> service through Envoy. Each click writes to Postgres and ClickHouse.</p>
+  <button id="visit">Record visit</button>
+  <dl id="stats"></dl>
+  <script>
+    const render = (s) => {
+      document.getElementById("stats").innerHTML = Object.entries(s)
+        .map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("");
+    };
+    const load = () => fetch("/api/stats").then((r) => r.json()).then(render);
+    document.getElementById("visit").onclick = () =>
+      fetch("/api/visit", { method: "POST" }).then((r) => r.json()).then(render);
+    load();
+  </script>
+</body>
+</html>

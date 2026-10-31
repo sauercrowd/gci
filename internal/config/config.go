@@ -36,6 +36,7 @@ type Service struct {
 	Install       string            `toml:"install,omitempty" json:"install,omitempty"`
 	Build         string            `toml:"build,omitempty" json:"build,omitempty"`
 	Reuse         string            `toml:"reuse,omitempty" json:"reuse,omitempty"`
+	Migrate       string            `toml:"migrate,omitempty" json:"migrate,omitempty"`
 	Command       string            `toml:"command" json:"command"`
 	Setup         string            `toml:"setup,omitempty" json:"setup,omitempty"`
 	User          string            `toml:"user,omitempty" json:"user"`
@@ -135,6 +136,9 @@ func (c *Config) Validate() error {
 		}
 		if (svc.Install != "" || svc.Build != "") && svc.Source == "" {
 			return fmt.Errorf("service %q: install and build require source", name)
+		}
+		if svc.Migrate != "" && strings.TrimSpace(svc.Migrate) == "" {
+			return fmt.Errorf("service %q: migrate must not be blank", name)
 		}
 		for env, secret := range svc.Secrets {
 			if !envNameRe.MatchString(env) {

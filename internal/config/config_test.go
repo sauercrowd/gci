@@ -65,12 +65,29 @@ func TestValidate(t *testing.T) {
 		"environment variable":             `app = "a"` + "\n[services.a]\ncommand = \"x\"\nenv = { \"bad-env\" = \"value\" }",
 		"reuse must be":                    `app = "a"` + "\n[services.a]\ncommand = \"x\"\nreuse = \"lockfile\"",
 		"install and build require source": `app = "a"` + "\n[services.a]\ncommand = \"x\"\ninstall = \"npm install\"",
+		"migrate must not be blank":        `app = "a"` + "\n[services.a]\ncommand = \"x\"\nmigrate = \"  \"",
 	}
 	for want, content := range cases {
 		_, err := Load(write(t, content))
 		if err == nil || !strings.Contains(strings.ToLower(err.Error()), want) {
 			t.Errorf("%q: got %v", want, err)
 		}
+	}
+}
+
+func TestMigrateWithVolumesIsAllowed(t *testing.T) {
+	cfg, err := Load(write(t, `
+app = "demo"
+[services.db]
+command = "postgres"
+migrate = "migrate"
+volumes = { data = "/var/lib/data" }
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Services["db"].Stateful() {
+		t.Fatal("service with volumes is not stateful")
 	}
 }
 
