@@ -26,3 +26,15 @@ func TestValidateRequiresCommand(t *testing.T) {
 		t.Fatal("expected missing command to fail")
 	}
 }
+
+func TestValidateEnvironmentName(t *testing.T) {
+	cfg := &Config{
+		App: "demo",
+		Services: map[string]*Service{
+			"web": {Command: "run", Env: map[string]string{"bad-name": "value"}},
+		},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected invalid environment name to fail")
+	}
+}
