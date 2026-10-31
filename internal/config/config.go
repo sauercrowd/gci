@@ -2,7 +2,6 @@
 package config
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -22,12 +21,6 @@ var nameRe = regexp.MustCompile(`^[a-z][a-z0-9-]{0,23}$`)
 var envNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 var secretNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,62}$`)
 
-var defaultInstallInputs = []string{
-	"package.json", "package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml",
-	"yarn.lock", ".npmrc", "pyproject.toml", "uv.lock", "requirements.txt",
-	"poetry.lock", "Pipfile", "Pipfile.lock",
-}
-
 type Config struct {
 	App      string              `toml:"app" json:"app"`
 	Server   string              `toml:"server,omitempty" json:"server,omitempty"`
@@ -42,8 +35,9 @@ type Service struct {
 	// Source is a local directory shipped to the host and snapshotted at /app.
 	Source        string            `toml:"source,omitempty" json:"source,omitempty"`
 	Install       string            `toml:"install,omitempty" json:"install,omitempty"`
-	InstallInputs []string          `toml:"install_inputs,omitempty" json:"install_inputs,omitempty"`
 	Build         string            `toml:"build,omitempty" json:"build,omitempty"`
+	Reuse         string            `toml:"reuse,omitempty" json:"reuse,omitempty"`
+	Migrate       string            `toml:"migrate,omitempty" json:"migrate,omitempty"`
 	Command       string            `toml:"command" json:"command"`
 	Setup         string            `toml:"setup,omitempty" json:"setup,omitempty"`
 	User          string            `toml:"user,omitempty" json:"user"`
@@ -89,16 +83,6 @@ func Load(path string) (*Config, error) {
 		if svc.Source != "" && !filepath.IsAbs(svc.Source) {
 			svc.Source = filepath.Join(base, svc.Source)
 		}
-		if svc.Install != "" && len(svc.InstallInputs) == 0 && svc.Source != "" {
-			for _, candidate := range defaultInstallInputs {
-				if _, err := os.Stat(filepath.Join(svc.Source, candidate)); err == nil {
-					svc.InstallInputs = append(svc.InstallInputs, candidate)
-				}
-			}
-		}
-		if svc.Install != "" && len(svc.InstallInputs) == 0 {
-			return nil, errors.New("install_inputs: no known lockfile/manifest found; set install_inputs")
-		}
 	}
 	return &cfg, nil
 }
@@ -110,6 +94,9 @@ func (c *Config) applyDefaults() {
 	for _, svc := range c.Services {
 		if svc.User == "" {
 			svc.User = "gci"
+		}
+		if svc.Reuse == "" {
+			svc.Reuse = "dependencies"
 		}
 		if svc.HealthTimeout == 0 {
 			svc.HealthTimeout = 120
@@ -145,13 +132,17 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("service %q depends on unknown service %q", name, dep)
 			}
 		}
-		if (svc.Install != "" || len(svc.InstallInputs) > 0 || svc.Build != "") && svc.Source == "" {
-			return fmt.Errorf("service %q: install, install_inputs, and build require source", name)
+		if svc.Reuse != "dependencies" && svc.Reuse != "build" && svc.Reuse != "nothing" {
+			return fmt.Errorf("service %q: reuse must be dependencies, build, or nothing", name)
 		}
-		for _, input := range svc.InstallInputs {
-			if err := ValidateInstallInput(input); err != nil {
-				return fmt.Errorf("service %q: install_inputs: %w", name, err)
-			}
+		if (svc.Install != "" || svc.Build != "") && svc.Source == "" {
+			return fmt.Errorf("service %q: install and build require source", name)
+		}
+		if strings.TrimSpace(svc.Migrate) == "" && svc.Migrate != "" {
+			return fmt.Errorf("service %q: migrate must not be blank", name)
+		}
+		if svc.Migrate != "" && len(svc.Volumes) > 0 {
+			return fmt.Errorf("service %q: migrate cannot be used with volumes", name)
 		}
 		for env := range svc.Env {
 			if !envNameRe.MatchString(env) {
@@ -206,21 +197,6 @@ func (c *Config) Validate() error {
 func ValidateAppName(name string) error {
 	if !nameRe.MatchString(name) {
 		return fmt.Errorf("app %q must match %s", name, nameRe)
-	}
-	return nil
-}
-
-func ValidateInstallInput(input string) error {
-	if input == "" || filepath.IsAbs(input) {
-		return fmt.Errorf("%q must be a non-empty source-relative path", input)
-	}
-	for _, part := range strings.Split(filepath.ToSlash(input), "/") {
-		if part == ".." {
-			return fmt.Errorf("%q must not contain ..", input)
-		}
-	}
-	if strings.ContainsAny(input, "*?[]") {
-		return fmt.Errorf("%q must not contain globs", input)
 	}
 	return nil
 }

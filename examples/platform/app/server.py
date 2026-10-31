@@ -1,6 +1,7 @@
 """Demo app: JSON API backed by Postgres + ClickHouse, plus a static frontend."""
 import json
 import os
+import sys
 import urllib.parse
 import urllib.request
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -76,7 +77,9 @@ class Handler(SimpleHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    migrate()
+    if sys.argv[1:] == ["migrate"]:
+        migrate()
+        raise SystemExit(0)
     port = int(os.environ.get("PORT", "8080"))
     print(f"listening on :{port}", flush=True)
     ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()

@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/sauercrowd/gci/internal/config"
 	"github.com/sauercrowd/gci/internal/host"
@@ -70,6 +71,7 @@ func init() {
 	bootstrap.Flags().StringVar(&vipRange, "vip-range", "10.77.1.0/24", "service VIP range, routed to Envoy")
 	bootstrap.Flags().StringVar(&storageSize, "storage-size", "50GiB", "size of the btrfs-backed gci storage pool")
 
+	var clean bool
 	deploy := &cobra.Command{
 		Use:   "deploy",
 		Short: "Deploy the services in gci.toml",
@@ -80,7 +82,7 @@ func init() {
 			}
 			defer h.Close()
 			ctx := cmd.Context()
-			plan := host.Plan{Config: cfg, Sources: map[string]string{}}
+			plan := host.Plan{Config: cfg, Sources: map[string]string{}, Clean: clean || cleanEnabled(os.Getenv("GCI_CLEAN"))}
 			for _, name := range sortedNames(cfg) {
 				svc := cfg.Services[name]
 				if svc.Source == "" {
@@ -107,6 +109,7 @@ func init() {
 			return h.Agent(ctx, []string{"apply"}, bytes.NewReader(raw), cmd.OutOrStdout(), cmd.ErrOrStderr())
 		},
 	}
+	deploy.Flags().BoolVar(&clean, "clean", false, "rebuild source services from a fresh base")
 
 	status := &cobra.Command{
 		Use:   "status",
@@ -222,6 +225,15 @@ func init() {
 	}
 	secret.AddCommand(secretSet, secretList, secretRemove)
 	rootCmd.AddCommand(bootstrap, deploy, status, logs, rm, secret)
+}
+
+func cleanEnabled(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes":
+		return true
+	default:
+		return false
+	}
 }
 
 func sortedNames(cfg *config.Config) []string {

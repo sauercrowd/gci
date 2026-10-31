@@ -35,6 +35,7 @@ command = "python3 server.py"
 port = 8080
 health = "/healthz"
 depends_on = ["postgres", "clickhouse"]
+migrate = "python3 server.py migrate"
 routes = [{ prefix = "/" }]
 env = { CLICKHOUSE_URL = "http://clickhouse.platform.internal:8123" }
 secrets = { DATABASE_URL = "database-url" }

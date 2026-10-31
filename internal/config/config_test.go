@@ -40,7 +40,7 @@ command = "cache"
 		t.Errorf("nixpkgs default not applied")
 	}
 	web := cfg.Services["web"]
-	if web.User != "gci" || web.Routes[0] != (Route{Host: "*", Prefix: "/"}) {
+	if web.User != "gci" || web.Reuse != "dependencies" || web.Routes[0] != (Route{Host: "*", Prefix: "/"}) {
 		t.Errorf("defaults not applied: %+v", web)
 	}
 	if web.Source != filepath.Join(filepath.Dir(p), "app") {
@@ -57,23 +57,23 @@ command = "cache"
 
 func TestValidate(t *testing.T) {
 	cases := map[string]string{
-		"must match":                       `app = "Bad_Name"` + "\n[services.a]\ncommand = \"x\"",
-		"command is required":              `app = "a"` + "\n[services.a]\nport = 1",
-		"require source":                   `app = "a"` + "\n[services.a]\ncommand = \"x\"\ninstall = \"npm ci\"",
-		"install_inputs":                   `app = "a"` + "\n[services.a]\ncommand = \"x\"\nsource = \"app\"\ninstall = \"npm ci\"\ninstall_inputs = [\"../package.json\"]",
-		"globs":                            `app = "a"` + "\n[services.a]\ncommand = \"x\"\nsource = \"app\"\ninstall = \"npm ci\"\ninstall_inputs = [\"package*.json\"]",
-		"secret environment":               `app = "a"` + "\n[services.a]\ncommand = \"x\"\nsecrets = { \"bad-env\" = \"valid\" }",
-		"environment variable":             `app = "a"` + "\n[services.a]\ncommand = \"x\"\nenv = { \"bad-env\" = \"value\" }",
-		"secret name":                      `app = "a"` + "\n[services.a]\ncommand = \"x\"\nsecrets = { TOKEN = \"Invalid_Name\" }",
-		"also defined in env":              `app = "a"` + "\n[services.a]\ncommand = \"x\"\nenv = { TOKEN = \"x\" }\nsecrets = { TOKEN = \"token\" }",
-		"build require source":             `app = "a"` + "\n[services.a]\ncommand = \"x\"\nbuild = \"npm run build\"",
-		"unknown service":                  `app = "a"` + "\n[services.a]\ncommand = \"x\"\ndepends_on = [\"b\"]",
-		"cycle":                            `app = "a"` + "\n[services.a]\ncommand = \"x\"\ndepends_on = [\"b\"]\n[services.b]\ncommand = \"x\"\ndepends_on = [\"a\"]",
-		"routes require port":              `app = "a"` + "\n[services.a]\ncommand = \"x\"\nroutes = [{}]",
-		"used by both":                     `app = "a"` + "\n[services.a]\ncommand = \"x\"\nvolumes = { v = \"/v\" }\n[services.b]\ncommand = \"x\"\nvolumes = { v = \"/w\" }",
-		"health requires port":             `app = "a"` + "\n[services.a]\ncommand = \"x\"\nhealth = \"/h\"",
-		"health_command must not be blank": `app = "a"` + "\n[services.a]\ncommand = \"x\"\nhealth_command = \"   \"",
-		"missing in the target":            `app = "a"` + "\n[services.a]\ncommand = \"x\"\nimage = \"nginx\"",
+		"must match":                          `app = "Bad_Name"` + "\n[services.a]\ncommand = \"x\"",
+		"command is required":                 `app = "a"` + "\n[services.a]\nport = 1",
+		"require source":                      `app = "a"` + "\n[services.a]\ncommand = \"x\"\ninstall = \"npm install\"",
+		"reuse must be":                       `app = "a"` + "\n[services.a]\ncommand = \"x\"\nreuse = \"invalid\"",
+		"migrate cannot be used with volumes": `app = "a"` + "\n[services.a]\ncommand = \"x\"\nmigrate = \"./migrate\"\nvolumes = { data = \"/data\" }",
+		"secret environment":                  `app = "a"` + "\n[services.a]\ncommand = \"x\"\nsecrets = { \"bad-env\" = \"valid\" }",
+		"environment variable":                `app = "a"` + "\n[services.a]\ncommand = \"x\"\nenv = { \"bad-env\" = \"value\" }",
+		"secret name":                         `app = "a"` + "\n[services.a]\ncommand = \"x\"\nsecrets = { TOKEN = \"Invalid_Name\" }",
+		"also defined in env":                 `app = "a"` + "\n[services.a]\ncommand = \"x\"\nenv = { TOKEN = \"x\" }\nsecrets = { TOKEN = \"token\" }",
+		"build require source":                `app = "a"` + "\n[services.a]\ncommand = \"x\"\nbuild = \"npm run build\"",
+		"unknown service":                     `app = "a"` + "\n[services.a]\ncommand = \"x\"\ndepends_on = [\"b\"]",
+		"cycle":                               `app = "a"` + "\n[services.a]\ncommand = \"x\"\ndepends_on = [\"b\"]\n[services.b]\ncommand = \"x\"\ndepends_on = [\"a\"]",
+		"routes require port":                 `app = "a"` + "\n[services.a]\ncommand = \"x\"\nroutes = [{}]",
+		"used by both":                        `app = "a"` + "\n[services.a]\ncommand = \"x\"\nvolumes = { v = \"/v\" }\n[services.b]\ncommand = \"x\"\nvolumes = { v = \"/w\" }",
+		"health requires port":                `app = "a"` + "\n[services.a]\ncommand = \"x\"\nhealth = \"/h\"",
+		"health_command must not be blank":    `app = "a"` + "\n[services.a]\ncommand = \"x\"\nhealth_command = \"   \"",
+		"missing in the target":               `app = "a"` + "\n[services.a]\ncommand = \"x\"\nimage = \"nginx\"",
 	}
 	for want, content := range cases {
 		_, err := Load(write(t, content))
@@ -98,59 +98,40 @@ health_command = "test -n \"$GCI_APP\""
 	}
 }
 
-func TestInstallInputsDefaultFromSource(t *testing.T) {
-	path := write(t, `
+func TestReuseDefaultAndInvalidValue(t *testing.T) {
+	cfg, err := Load(write(t, `
 app = "demo"
 [services.web]
 command = "node server.js"
-source = "./app"
-install = "npm ci"
-`)
-	source := filepath.Join(filepath.Dir(path), "app")
-	if err := os.Mkdir(source, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	for _, name := range []string{"package.json", "package-lock.json", "app.js"} {
-		if err := os.WriteFile(filepath.Join(source, name), []byte("{}"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	cfg, err := Load(path)
+`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"package.json", "package-lock.json"}; !reflect.DeepEqual(cfg.Services["web"].InstallInputs, want) {
-		t.Errorf("install_inputs = %v, want %v", cfg.Services["web"].InstallInputs, want)
+	if got := cfg.Services["web"].Reuse; got != "dependencies" {
+		t.Fatalf("reuse = %q, want dependencies", got)
 	}
-}
 
-func TestInstallInputsRequiresKnownManifest(t *testing.T) {
-	path := write(t, `
+	_, err = Load(write(t, `
 app = "demo"
 [services.web]
 command = "node server.js"
-source = "./app"
-install = "npm ci"
-`)
-	if err := os.Mkdir(filepath.Join(filepath.Dir(path), "app"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	_, err := Load(path)
-	if err == nil || err.Error() != "install_inputs: no known lockfile/manifest found; set install_inputs" {
-		t.Fatalf("got %v", err)
+reuse = "lockfile"
+`))
+	if err == nil || !strings.Contains(err.Error(), "reuse must be") {
+		t.Fatalf("invalid reuse error = %v", err)
 	}
 }
 
-func TestValidateInstallInput(t *testing.T) {
-	for _, input := range []string{"/absolute", "../parent", "nested/../escape", "package*.json", "foo?.json", "dir/[ab]"} {
-		if err := ValidateInstallInput(input); err == nil {
-			t.Errorf("%q unexpectedly valid", input)
-		}
-	}
-	for _, input := range []string{"package-lock.json", "nested/manifest"} {
-		if err := ValidateInstallInput(input); err != nil {
-			t.Errorf("%q: %v", input, err)
-		}
+func TestMigrateWithVolumesIsRejected(t *testing.T) {
+	_, err := Load(write(t, `
+app = "demo"
+[services.db]
+command = "postgres"
+migrate = "migrate"
+volumes = { data = "/var/lib/data" }
+`))
+	if err == nil || !strings.Contains(err.Error(), "migrate cannot be used with volumes") {
+		t.Fatalf("migrate with volumes error = %v", err)
 	}
 }
 

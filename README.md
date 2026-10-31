@@ -52,11 +52,13 @@ See [`examples/platform`](examples/platform) for the full example, and [docs](do
 ## How a deploy works
 
 1. The client packs each `source` directory into a deterministic tarball and uploads it only if its hash is new on the host.
-2. Before changing running services, the host checks secrets, realizes each Nix `buildEnv`, installs dependencies into a stopped `deps` snapshot keyed by the lockfile inputs, and creates a stopped `release` snapshot keyed by the source and build.
-3. Activation copies a release into a fresh service container, writes runtime configuration and secrets, starts it, and waits for the configured probe and optional deploy-time `health_command`. Secrets are never present in dependency or release snapshots.
+2. Before changing running services, the host checks secrets, realizes each Nix `buildEnv`, and prepares release builders using per-service `reuse` chaining. The default `dependencies` mode starts from the newest matching `installed` snapshot; `build` reuses a full release; `nothing` starts from the base image. The builder syncs source using an in-container manifest, then runs `install` and `build`.
+3. A configured `migrate` command runs in a temporary copy with runtime config before the replacement starts. Activation copies the prepared release into a fresh service container, writes runtime configuration and secrets, starts it, and waits for the configured probe and optional deploy-time `health_command`. Secrets are never present in release snapshots.
 4. Envoy switches to a healthy replacement before the old stateless service container is deleted. Stateful services stop the old container and reuse its persistent volume.
 5. Each service retains its current release and the two newest others. Release roots keep the corresponding Nix closures available for reuse.
 
 `gci secret set <name>` reads a value from stdin; secret values are not command-line arguments. Secrets are stored on the host with mode `0600`, injected only into `/etc/gci/service.env` at activation, and kept by `gci rm`.
 
-Bootstrap creates a btrfs-backed Incus pool named `gci` (default 50 GiB; set `--storage-size` to change it). New service, dependency, and release containers use that pool; existing named volumes in the legacy `default` pool keep their data. Dependency and build commands share a persistent `gcicache-<app>-<service>` volume at `/var/cache/gci`. `gci rm --volumes` removes application volumes from both pools and these caches; without it, they are kept.
+Bootstrap creates a btrfs-backed Incus pool named `gci` (default 50 GiB; set `--storage-size` to change it). New service and release containers use that pool; existing named volumes in the legacy `default` pool keep their data. Install and build commands share a persistent `gcicache-<app>-<service>` volume at `/var/cache/gci`. `gci rm --volumes` removes application volumes from both pools and these caches; without it, they are kept.
+
+Use `gci deploy --clean` or set `GCI_CLEAN=1` (also `true` or `yes`) to rebuild every source service from a fresh base. `reuse = "build"` carries generated output forward and can leave stale files, such as JavaScript emitted by `tsc` for a deleted source file.
