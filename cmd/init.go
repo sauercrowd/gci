@@ -15,8 +15,11 @@ import (
 const starterConfig = `app = "%s"
 
 [services.web]
-packages = ["nodejs_22"]
-command = "node server.js"
+packages = ["python3"]
+command = "python3 -m http.server 8080 --directory /home/gci"
+port = 8080
+health = "/"
+routes = [{ host = "*", prefix = "/" }]
 `
 
 var nonNameChars = regexp.MustCompile(`[^a-z0-9-]+`)

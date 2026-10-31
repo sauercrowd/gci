@@ -19,9 +19,8 @@ var rootCmd = &cobra.Command{
 	Long: `gci deploys services onto your own hosts without building images.
 
 A host is bootstrapped once (Incus, Nix, a bridge network, a base container
-image and an Envoy front door). Each deploy then only realises the Nix
-packages a service needs (a no-op when they are already present), ships the
-service's source directory, and swaps in a new container once it is healthy.`,
+image and an Envoy front door). Each deploy then realises the Nix packages
+a service needs and swaps in a new base-image container once it is healthy.`,
 	SilenceUsage:  true,
 	SilenceErrors: true,
 }
