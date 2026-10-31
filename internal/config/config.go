@@ -31,6 +31,7 @@ type Config struct {
 type Service struct {
 	// Packages are Nix expressions evaluated with nixpkgs in scope,
 	// e.g. "postgresql_16" or "python3.withPackages (p: [p.psycopg])".
+	// Source is a local directory shipped to the host and snapshotted at /app.
 	Packages      []string          `toml:"packages" json:"packages"`
 	Source        string            `toml:"source,omitempty" json:"source,omitempty"`
 	Install       string            `toml:"install,omitempty" json:"install,omitempty"`

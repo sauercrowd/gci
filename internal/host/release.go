@@ -24,9 +24,9 @@ const buildTimeout = 30 * time.Minute
 
 type preparedService struct {
 	env          string
-	release      *Release
 	secrets      map[string]string
 	secretDigest string
+	release      *Release
 }
 
 func baseFingerprint(ctx context.Context) (string, error) {
