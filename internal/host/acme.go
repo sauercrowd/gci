@@ -274,6 +274,10 @@ func storeACMEFallback(host string) error {
 	return storeCertificate(host, cert)
 }
 
+func keepCurrentOnFailure(current *storedCertificate, err error, now time.Time) bool {
+	return err != nil && current != nil && current.Meta.Source == "acme" && current.Meta.NotAfter.After(now)
+}
+
 func bridgeGateway(hc *HostConfig) (string, error) {
 	prefix, err := netip.ParsePrefix(hc.Subnet)
 	if err != nil {
@@ -304,6 +308,11 @@ func issueACMECertificates(ctx context.Context, w io.Writer, hc *HostConfig, cfg
 		err = issueACMECertificate(attemptCtx, hc, host)
 		cancel()
 		if err != nil {
+			if keepCurrentOnFailure(current, err, time.Now()) {
+				fmt.Fprintf(w, "%s: Let's Encrypt renewal failed (%v); keeping the current certificate (valid until %s)\n",
+					host, err, current.Meta.NotAfter.Format(time.RFC3339))
+				continue
+			}
 			if fallbackErr := storeACMEFallback(host); fallbackErr != nil {
 				return fallbackErr
 			}
@@ -381,6 +390,11 @@ func Renew(ctx context.Context, w io.Writer) error {
 			err := issueACMECertificate(attemptCtx, hc, host)
 			cancel()
 			if err != nil {
+				if keepCurrentOnFailure(current, err, time.Now()) {
+					fmt.Fprintf(w, "%s: Let's Encrypt renewal failed (%v); keeping the current certificate (valid until %s)\n",
+						host, err, current.Meta.NotAfter.Format(time.RFC3339))
+					continue
+				}
 				if fallbackErr := storeACMEFallback(host); fallbackErr != nil {
 					return fallbackErr
 				}
