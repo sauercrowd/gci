@@ -18,10 +18,11 @@ func write(t *testing.T, content string) string {
 }
 
 func TestLoadDefaultsAndOrder(t *testing.T) {
-	cfg, err := Load(write(t, `
+	p := write(t, `
 app = "demo"
 [services.web]
 command = "run"
+source = "./app"
 port = 8080
 depends_on = ["db", "cache"]
 routes = [{}]
@@ -30,24 +31,25 @@ command = "db"
 volumes = { data = "/data" }
 [services.cache]
 command = "cache"
-`))
+`)
+	cfg, err := Load(p)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cfg.Nixpkgs != DefaultNixpkgs {
-		t.Fatal("nixpkgs default not applied")
+		t.Errorf("nixpkgs default not applied")
 	}
 	web := cfg.Services["web"]
 	if web.User != "gci" || web.Reuse != "dependencies" || web.Routes[0] != (Route{Host: "*", Prefix: "/"}) {
-		t.Fatalf("defaults not applied: %+v", web)
+		t.Errorf("defaults not applied: %+v", web)
+	}
+	if web.Source != filepath.Join(filepath.Dir(p), "app") {
+		t.Errorf("source not resolved relative to config: %s", web.Source)
 	}
 	if !cfg.Services["db"].Stateful() || web.Stateful() {
-		t.Fatal("stateful detection is wrong")
+		t.Errorf("stateful detection wrong")
 	}
-	order, err := cfg.Order()
-	if err != nil {
-		t.Fatal(err)
-	}
+	order, _ := cfg.Order()
 	if want := []string{"cache", "db", "web"}; !reflect.DeepEqual(order, want) {
 		t.Errorf("order = %v, want %v", order, want)
 	}
@@ -65,6 +67,7 @@ func TestValidate(t *testing.T) {
 		"environment variable":             `app = "a"` + "\n[services.a]\ncommand = \"x\"\nenv = { \"bad-env\" = \"value\" }",
 		"reuse must be":                    `app = "a"` + "\n[services.a]\ncommand = \"x\"\nreuse = \"lockfile\"",
 		"install and build require source": `app = "a"` + "\n[services.a]\ncommand = \"x\"\ninstall = \"npm install\"",
+		"build require source":             `app = "a"` + "\n[services.a]\ncommand = \"x\"\nbuild = \"npm run build\"",
 	}
 	for want, content := range cases {
 		_, err := Load(write(t, content))
@@ -89,5 +92,29 @@ build = "npm run build"
 	}
 	if got, want := cfg.Services["web"].Source, filepath.Join(filepath.Dir(p), "app"); got != want {
 		t.Fatalf("source = %q, want %q", got, want)
+	}
+}
+
+func TestReuseDefaultAndInvalidValue(t *testing.T) {
+	cfg, err := Load(write(t, `
+app = "demo"
+[services.web]
+command = "node server.js"
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Services["web"].Reuse; got != "dependencies" {
+		t.Fatalf("reuse = %q, want dependencies", got)
+	}
+
+	_, err = Load(write(t, `
+app = "demo"
+[services.web]
+command = "node server.js"
+reuse = "lockfile"
+`))
+	if err == nil || !strings.Contains(err.Error(), "reuse must be") {
+		t.Fatalf("invalid reuse error = %v", err)
 	}
 }
