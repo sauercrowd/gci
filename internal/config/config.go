@@ -141,9 +141,6 @@ func (c *Config) Validate() error {
 		if strings.TrimSpace(svc.Migrate) == "" && svc.Migrate != "" {
 			return fmt.Errorf("service %q: migrate must not be blank", name)
 		}
-		if svc.Migrate != "" && len(svc.Volumes) > 0 {
-			return fmt.Errorf("service %q: migrate cannot be used with volumes", name)
-		}
 		for env := range svc.Env {
 			if !envNameRe.MatchString(env) {
 				return fmt.Errorf("service %q: environment variable %q is invalid", name, env)
