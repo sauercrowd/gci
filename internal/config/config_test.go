@@ -113,3 +113,15 @@ secrets = { TOKEN = "token" }
 		t.Fatalf("duplicate secret environment error = %v", err)
 	}
 }
+
+func TestHealthCommandValidation(t *testing.T) {
+	_, err := Load(write(t, `
+app = "demo"
+[services.web]
+command = "server"
+health_command = "  "
+`))
+	if err == nil || !strings.Contains(err.Error(), "health_command must not be blank") {
+		t.Fatalf("blank health_command error = %v", err)
+	}
+}
