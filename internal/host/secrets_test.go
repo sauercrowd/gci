@@ -7,13 +7,6 @@ import (
 	"testing"
 )
 
-func useTestSecretRoot(t *testing.T) {
-	t.Helper()
-	old := secretRoot
-	secretRoot = filepath.Join(t.TempDir(), "secrets")
-	t.Cleanup(func() { secretRoot = old })
-}
-
 func TestSecretDigestKeyReusesExistingKeyAndLeavesNoTempFiles(t *testing.T) {
 	useTestSecretRoot(t)
 	if err := os.MkdirAll(secretRoot, 0o700); err != nil {

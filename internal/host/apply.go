@@ -134,9 +134,6 @@ func Apply(ctx context.Context, w io.Writer, plan Plan) error {
 	defer unlock()
 
 	cfg := plan.Config
-	if cfg == nil {
-		return fmt.Errorf("missing config in deployment plan")
-	}
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
@@ -176,9 +173,10 @@ func Apply(ctx context.Context, w io.Writer, plan Plan) error {
 		if err != nil {
 			return fmt.Errorf("%s: secret digest: %w", name, err)
 		}
-		resolved[name], digests[name] = values, digest
+		resolved[name] = values
+		digests[name] = digest
 	}
-	if len(missing) > 0 {
+	if len(missing) != 0 {
 		return fmt.Errorf("missing secrets: %s", strings.Join(missing, "; "))
 	}
 
@@ -271,8 +269,12 @@ func Apply(ctx context.Context, w io.Writer, plan Plan) error {
 	return nil
 }
 
-func revision(cfg *config.Config, name, env string) string {
-	return revisionWithRelease(cfg, name, env, "", "", time.Time{})
+func revision(cfg *config.Config, name, env, sourceHash string) string {
+	return revisionWithSecrets(cfg, name, env, sourceHash, "")
+}
+
+func revisionWithSecrets(cfg *config.Config, name, env, releaseKey, secretsHash string) string {
+	return revisionWithRelease(cfg, name, env, releaseKey, secretsHash, time.Time{})
 }
 
 func revisionWithRelease(cfg *config.Config, name, env, releaseKey, secretsHash string, releaseCreated time.Time) string {

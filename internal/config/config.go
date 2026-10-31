@@ -31,7 +31,8 @@ type Config struct {
 type Service struct {
 	// Packages are Nix expressions evaluated with nixpkgs in scope,
 	// e.g. "postgresql_16" or "python3.withPackages (p: [p.psycopg])".
-	Packages      []string          `toml:"packages" json:"packages"`
+	Packages []string `toml:"packages" json:"packages"`
+	// Source is a local directory shipped to the host and snapshotted at /app.
 	Source        string            `toml:"source,omitempty" json:"source,omitempty"`
 	Install       string            `toml:"install,omitempty" json:"install,omitempty"`
 	Build         string            `toml:"build,omitempty" json:"build,omitempty"`
@@ -137,8 +138,13 @@ func (c *Config) Validate() error {
 		if (svc.Install != "" || svc.Build != "") && svc.Source == "" {
 			return fmt.Errorf("service %q: install and build require source", name)
 		}
-		if svc.Migrate != "" && strings.TrimSpace(svc.Migrate) == "" {
+		if strings.TrimSpace(svc.Migrate) == "" && svc.Migrate != "" {
 			return fmt.Errorf("service %q: migrate must not be blank", name)
+		}
+		for env := range svc.Env {
+			if !envNameRe.MatchString(env) {
+				return fmt.Errorf("service %q: environment variable %q is invalid", name, env)
+			}
 		}
 		for env, secret := range svc.Secrets {
 			if !envNameRe.MatchString(env) {
@@ -149,11 +155,6 @@ func (c *Config) Validate() error {
 			}
 			if _, ok := svc.Env[env]; ok {
 				return fmt.Errorf("service %q: secret environment variable %q is also defined in env", name, env)
-			}
-		}
-		for env := range svc.Env {
-			if !envNameRe.MatchString(env) {
-				return fmt.Errorf("service %q: environment variable %q is invalid", name, env)
 			}
 		}
 		if len(svc.Routes) > 0 && svc.Port == 0 {

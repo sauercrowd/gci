@@ -1,4 +1,64 @@
-# GCI
+# gci
 
-GCI 2.0 is being rebuilt. Documentation and deployment features will return
-as the new host architecture is introduced.
+Deploy services to any Linux host over SSH. No image builds and no registry.
+
+- **Nix** pins and provides every runtime and package. A deploy only realises store paths the host is missing.
+- **Incus** system containers run each service with its own IP, cgroup limits, and persistent volumes. The host `/nix/store` is mounted read-only into every container.
+- **Envoy** runs once per host as the front door and routes traffic to services.
+
+Today gci targets a single host. Cross-host networking (WireGuard between per-host Envoys) is planned.
+
+## Quickstart
+
+```bash
+go install github.com/sauercrowd/gci@latest
+
+gci server add prod --host prod.example.com -u ubuntu -i ~/.ssh/id_ed25519
+gci bootstrap            # once per host: Incus, Nix, gci btrfs pool, bridge, base image, Envoy
+cd examples/platform    # or: gci init in your own project for a starter gci.toml
+gci secret set postgres-password
+gci secret set database-url
+gci deploy               # Postgres + ClickHouse + Python app behind Envoy
+gci status
+gci logs web -f
+```
+
+`gci.toml`:
+
+```toml
+app = "platform"
+
+[services.postgres]
+packages = ["postgresql_16"]
+volumes  = { pgdata = "/var/lib/postgresql" }
+command  = "postgres -D /var/lib/postgresql/16 -c listen_addresses=*"
+port     = 5432
+secrets  = { POSTGRES_PASSWORD = "postgres-password" }
+
+[services.web]
+packages   = ["python3.withPackages (p: [ p.psycopg ])"]
+source     = "./app"            # shipped to the host and snapshotted at /app
+command    = "python3 server.py"
+port       = 8080
+health     = "/healthz"
+depends_on = ["postgres"]
+routes     = [{ prefix = "/" }]
+env        = { CLICKHOUSE_URL = "http://clickhouse.platform.internal:8123" }
+secrets    = { DATABASE_URL = "database-url" }
+```
+
+See [`examples/platform`](examples/platform) for the full example, and [docs](docs/) for the configuration and command reference.
+
+## How a deploy works
+
+1. The client packs each `source` directory into a deterministic tarball and uploads it only if its hash is new on the host.
+2. Before changing running services, the host checks secrets, realizes each Nix `buildEnv`, and prepares release builders using per-service `reuse` chaining. The default `dependencies` mode starts from the newest matching `installed` snapshot; `build` reuses a full release; `nothing` starts from the base image. The builder syncs source using an in-container manifest, then runs `install` and `build`.
+3. For a changed service, `migrate` runs before `setup` and `command`. Stateless services migrate in a temporary copy while the old version keeps serving; services with volumes migrate in the new container after the old one is stopped, with volumes attached, before the service starts. Migrations must be backwards-compatible in both cases: stateless services migrate while the old version keeps serving, and if activation fails after a migration succeeded, the old version (restarted, for stateful services) runs against the migrated data. Migration failure aborts the deploy and restarts the old container; no-change deploys skip migration. Activation writes runtime configuration and secrets, starts the service, and waits for the configured probe and optional deploy-time `health_command`. Secrets are never present in release snapshots.
+4. Envoy switches to a healthy replacement before the old stateless service container is deleted. Stateful services stop the old container and reuse its persistent volume.
+5. Each service retains its current release and the two newest others. Release roots keep the corresponding Nix closures available for reuse.
+
+`gci secret set <name>` reads a value from stdin; secret values are not command-line arguments. Secrets are stored on the host with mode `0600`, injected only into `/etc/gci/service.env` at activation, and kept by `gci rm`.
+
+Bootstrap creates a btrfs-backed Incus pool named `gci` (default 50 GiB; set `--storage-size` to change it). New service and release containers use that pool; existing named volumes in the legacy `default` pool keep their data. Install and build commands share a persistent `gcicache-<app>-<service>` volume at `/var/cache/gci`. `gci rm --volumes` removes application volumes from both pools and these caches; without it, they are kept.
+
+Use `gci deploy --clean` or set `GCI_CLEAN=1` (also `true` or `yes`) to rebuild every source service from a fresh base. `reuse = "build"` carries generated output forward and can leave stale files, such as JavaScript emitted by `tsc` for a deleted source file.

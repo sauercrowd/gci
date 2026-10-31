@@ -15,6 +15,40 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// project loads gci.toml (if required) and connects to the selected server.
+func project(cmd *cobra.Command, needConfig bool) (*config.Config, *remote.Host, error) {
+	path, _ := cmd.Flags().GetString("config")
+	name, _ := cmd.Flags().GetString("server")
+	var cfg *config.Config
+	if needConfig || fileExists(path) {
+		var err error
+		if cfg, err = config.Load(path); err != nil {
+			return nil, nil, err
+		}
+		if name == "" {
+			name = cfg.Server
+		}
+	}
+	s, err := findServer(name)
+	if err != nil {
+		return nil, nil, err
+	}
+	h, err := connect(cmd.Context(), s)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := h.EnsureAgent(cmd.Context(), cmd.ErrOrStderr()); err != nil {
+		h.Close()
+		return nil, nil, err
+	}
+	return cfg, h, nil
+}
+
+func fileExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
+}
+
 func init() {
 	var subnet, vipRange string
 	var httpPort int
