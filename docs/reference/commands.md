@@ -4,6 +4,7 @@ Global flags: `-c/--config` (default `gci.toml`) and `-s/--server` (default: `se
 
 | Command | Description |
 | --- | --- |
+| `gci init [--app name]` | Write a commented starter `gci.toml` (or the `-c` path) locally. The app name defaults to the directory name; an existing file is never overwritten. |
 | `gci server add <name> --host h[:port] [-u user] [-i key]` | Register an SSH host in `~/.gci/servers.toml`. Use `--local` to target this machine directly. |
 | `gci server ls` / `gci server rm <name>` | List or remove registered hosts. |
 | `gci bootstrap [--http-port 80] [--subnet 10.77.0.1/24] [--vip-range 10.77.1.0/24] [--storage-size 50GiB]` | Prepare a host once, including the btrfs-backed `gci` storage pool (see [Installation](/installation/)). |

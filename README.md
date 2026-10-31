@@ -15,7 +15,7 @@ go install github.com/sauercrowd/gci@latest
 
 gci server add prod --host prod.example.com -u ubuntu -i ~/.ssh/id_ed25519
 gci bootstrap            # once per host: Incus, Nix, gci btrfs pool, bridge, base image, Envoy
-cd examples/platform
+cd examples/platform    # or: gci init in your own project for a starter gci.toml
 gci secret set postgres-password
 gci secret set database-url
 gci deploy               # Postgres + ClickHouse + Python app behind Envoy
