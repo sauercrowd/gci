@@ -66,7 +66,7 @@ func init() {
 				nil, cmd.OutOrStdout(), cmd.ErrOrStderr())
 		},
 	}
-	bootstrap.Flags().StringVar(&subnet, "subnet", "10.77.0.1/24", "gateway address/CIDR of the gci bridge")
+	bootstrap.Flags().StringVar(&subnet, "subnet", "", "gateway address/CIDR of the gci bridge (defaults to the existing bridge or 10.77.0.1/24)")
 	bootstrap.Flags().IntVar(&httpPort, "http-port", 80, "host port Envoy listens on")
 	bootstrap.Flags().StringVar(&vipRange, "vip-range", "10.77.1.0/24", "service VIP range, routed to Envoy")
 	bootstrap.Flags().StringVar(&storageSize, "storage-size", "50GiB", "size of the btrfs-backed gci storage pool")
