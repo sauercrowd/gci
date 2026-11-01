@@ -37,6 +37,10 @@ func Bootstrap(ctx context.Context, w io.Writer, opts BootstrapOptions) error {
 	if os.Geteuid() != 0 {
 		return fmt.Errorf("bootstrap must run as root")
 	}
+	cur := currentSubnet(ctx)
+	if opts.Subnet == "" {
+		opts.Subnet = cur
+	}
 	if opts.Subnet == "" {
 		opts.Subnet = "10.77.0.1/24"
 	}
@@ -49,6 +53,9 @@ func Bootstrap(ctx context.Context, w io.Writer, opts BootstrapOptions) error {
 	gw, err := netip.ParsePrefix(opts.Subnet)
 	if err != nil {
 		return fmt.Errorf("subnet: %w", err)
+	}
+	if err := checkSubnet(cur, gw); err != nil {
+		return err
 	}
 	vips, err := netip.ParsePrefix(opts.VIPRange)
 	if err != nil {
@@ -124,6 +131,31 @@ func Bootstrap(ctx context.Context, w io.Writer, opts BootstrapOptions) error {
 		}
 	}
 	fmt.Fprintf(w, "host ready; front door on :%d and :%d\n", opts.HTTPPort, opts.HTTPSPort)
+	return nil
+}
+
+func currentSubnet(ctx context.Context) string {
+	if !exists(ctx, "network", "show", networkName) {
+		return ""
+	}
+	subnet, err := incus(ctx, "network", "get", networkName, "ipv4.address")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(subnet)
+}
+
+func checkSubnet(cur string, want netip.Prefix) error {
+	if cur == "" {
+		return nil
+	}
+	got, err := netip.ParsePrefix(cur)
+	if err != nil {
+		return fmt.Errorf("network %s has invalid subnet %q: %w", networkName, cur, err)
+	}
+	if got != want {
+		return fmt.Errorf("network %s already uses %s; changing --subnet is not supported", networkName, cur)
+	}
 	return nil
 }
 
