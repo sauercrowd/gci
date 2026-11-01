@@ -70,7 +70,24 @@ func saveServers(list []server) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(p, raw, 0o600)
+	tmp, err := os.CreateTemp(filepath.Dir(p), ".servers-*.toml")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err := tmp.Write(raw); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, p)
 }
 
 func findServer(name string) (server, error) {
