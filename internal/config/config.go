@@ -3,6 +3,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -58,6 +59,9 @@ type Service struct {
 type Route struct {
 	Host   string `toml:"host,omitempty" json:"host"`
 	Prefix string `toml:"prefix,omitempty" json:"prefix"`
+	TLS    string `toml:"tls,omitempty" json:"tls,omitempty"`
+	Cert   string `toml:"cert,omitempty" json:"cert,omitempty"`
+	Key    string `toml:"key,omitempty" json:"key,omitempty"`
 }
 
 // Stateful services own volumes; they are replaced stop-then-start instead of blue/green.
@@ -108,11 +112,15 @@ func (c *Config) applyDefaults() {
 			if svc.Routes[i].Prefix == "" {
 				svc.Routes[i].Prefix = "/"
 			}
+			if svc.Routes[i].TLS == "" {
+				svc.Routes[i].TLS = DefaultTLSMode(svc.Routes[i].Host)
+			}
 		}
 	}
 }
 
 func (c *Config) Validate() error {
+	c.applyDefaults()
 	if err := ValidateAppName(c.App); err != nil {
 		return err
 	}
@@ -173,6 +181,27 @@ func (c *Config) Validate() error {
 			if !strings.HasPrefix(r.Prefix, "/") {
 				return fmt.Errorf("service %q: route prefix %q must start with /", name, r.Prefix)
 			}
+			switch r.TLS {
+			case "acme", "self-signed", "custom", "off":
+			default:
+				return fmt.Errorf("service %q: route %s has unknown tls mode %q", name, r.Host, r.TLS)
+			}
+			if r.TLS == "acme" && acmeUnsupportedHost(r.Host) {
+				return fmt.Errorf("service %q: ACME TLS cannot be used for route host %q (wildcard, localhost, and IP hosts are not supported)", name, r.Host)
+			}
+			if r.TLS == "custom" {
+				if r.Cert == "" || r.Key == "" {
+					return fmt.Errorf("service %q: route %s with tls=custom requires both cert and key secret names", name, r.Host)
+				}
+				if err := ValidateSecretName(r.Cert); err != nil {
+					return fmt.Errorf("service %q: route %s cert: %w", name, r.Host, err)
+				}
+				if err := ValidateSecretName(r.Key); err != nil {
+					return fmt.Errorf("service %q: route %s key: %w", name, r.Host, err)
+				}
+			} else if r.Cert != "" || r.Key != "" {
+				return fmt.Errorf("service %q: route %s cert and key are only valid with tls=custom", name, r.Host)
+			}
 		}
 		for vol, p := range svc.Volumes {
 			if !nameRe.MatchString(vol) {
@@ -187,8 +216,49 @@ func (c *Config) Validate() error {
 			volumeOwner[vol] = name
 		}
 	}
+	routeOwners := map[string]string{}
+	hostTLS := map[string]Route{}
+	for _, name := range sortedServiceNames(c.Services) {
+		for _, r := range c.Services[name].Routes {
+			routeKey := r.Host + "\x00" + r.Prefix
+			if owner, ok := routeOwners[routeKey]; ok && owner != name {
+				return fmt.Errorf("route %s%s is already used by app %q service %q", r.Host, r.Prefix, c.App, owner)
+			}
+			routeOwners[routeKey] = name
+			if previous, ok := hostTLS[r.Host]; ok && !sameTLSSettings(previous, r) {
+				return fmt.Errorf("route host %q has inconsistent tls, cert, or key settings", r.Host)
+			}
+			hostTLS[r.Host] = r
+		}
+	}
 	_, err := c.Order()
 	return err
+}
+
+func DefaultTLSMode(host string) string {
+	lower := strings.ToLower(host)
+	if strings.Contains(host, "*") || lower == "localhost" || strings.HasSuffix(lower, ".localhost") || net.ParseIP(strings.Trim(host, "[]")) != nil {
+		return "self-signed"
+	}
+	return "acme"
+}
+
+func acmeUnsupportedHost(host string) bool {
+	return strings.Contains(host, "*") || strings.EqualFold(host, "localhost") ||
+		strings.HasSuffix(strings.ToLower(host), ".localhost") || net.ParseIP(strings.Trim(host, "[]")) != nil
+}
+
+func sameTLSSettings(a, b Route) bool {
+	return a.TLS == b.TLS && a.Cert == b.Cert && a.Key == b.Key
+}
+
+func sortedServiceNames(services map[string]*Service) []string {
+	names := make([]string, 0, len(services))
+	for name := range services {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 func ValidateAppName(name string) error {

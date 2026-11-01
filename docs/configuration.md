@@ -22,7 +22,7 @@ health         = "/healthz"
 health_timeout = 120
 volumes        = { data = "/var/lib/data" }
 depends_on     = ["postgres"]
-routes         = [{ host = "*", prefix = "/" }]
+routes         = [{ host = "app.example.com", prefix = "/", tls = "acme" }]
 cpu            = "2"
 memory         = "1GiB"
 ```
@@ -46,12 +46,33 @@ memory         = "1GiB"
 | `health_timeout` | Seconds to wait for health. Default 120. A unit that restarts 5 times fails the deploy early. |
 | `volumes` | `name = "/path"` pairs. Each is an Incus custom volume named `gci-<app>-<name>`, and it survives redeploys and `gci rm`. A service with volumes is **stateful**: it is stopped, then started, rather than rolled. |
 | `depends_on` | Services that are deployed first. Cycles are rejected. |
-| `routes` | Envoy routes. `host` defaults to `*` and `prefix` to `/`. |
+| `routes` | Envoy routes. Each route has `host` (default `*`), `prefix` (default `/`), and optional `tls`, `cert`, and `key` settings. |
+| `routes[].tls` | `acme`, `self-signed`, `custom`, or `off`. Defaults to `self-signed` for `*`, wildcard hosts, localhost names, and IP literals; other hosts default to `acme`. ACME requires a public, non-wildcard DNS name. |
+| `routes[].cert`, `routes[].key` | Secret names containing a custom certificate chain PEM and matching private key PEM. Both are required only when `tls = "custom"`; the certificate must be valid for the route host. |
 | `cpu`, `memory` | Incus `limits.cpu` and `limits.memory`. |
 
 ## Health checks
 
 The HTTP, TCP, or systemd-active probe runs first. If `health_command` is set, gci then runs it inside the new container before promoting traffic, retrying once per second until it succeeds or the shared `health_timeout` expires. Each command attempt is capped at 10 seconds. The command runs only during deployment; Envoy does not run it, and continuous health-command checks are not supported.
+
+## TLS and certificates
+
+Routes use HTTPS by default. A normal DNS hostname defaults to `tls = "acme"` and is issued a Let's Encrypt certificate using HTTP-01 validation on host port 80. Wildcards, `localhost` names, IP addresses, and `*` default to `self-signed`; these routes still redirect HTTP to HTTPS. Set `tls = "off"` to serve that host over HTTP without a redirect. All routes for a host must use the same TLS mode and custom secret names.
+
+For a custom certificate, store the full certificate chain and matching private key as app secrets, then refer to their names:
+
+```toml
+routes = [{ host = "app.example.com", prefix = "/", tls = "custom", cert = "origin-cert", key = "origin-key" }]
+```
+
+Create or update them with `gci secret set`. The certificate and key are validated before activation, and private keys are kept in the root-only host certificate store and the Envoy container's private SDS directory, not in its read-only config mount.
+
+| Cloudflare SSL mode | Suitable origin certificate |
+| --- | --- |
+| Full | Self-signed works because Cloudflare does not validate the origin certificate. |
+| Full (strict) | Use ACME or a custom certificate trusted by Cloudflare, such as a Cloudflare Origin CA certificate. |
+
+Bootstrap defaults to host ports 80 and 443. ACME also requires the hostname to resolve to the host and inbound HTTP traffic to reach port 80. The daily `gci-renew.timer` retries ACME issuance and renews certificates before expiry.
 
 ## Release snapshots
 

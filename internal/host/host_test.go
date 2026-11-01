@@ -17,13 +17,13 @@ func TestEnvoyResources(t *testing.T) {
 	states := []*AppState{{
 		App: "demo",
 		Services: map[string]*ServiceState{
-			"web": {IP: "10.0.0.2", Port: 8080, Routes: []config.Route{{Host: "*", Prefix: "/"}}},
-			"api": {IP: "10.0.0.3", Port: 9000, Routes: []config.Route{{Host: "*", Prefix: "/api"}, {Host: "api.example.com", Prefix: "/"}}},
+			"web": {IP: "10.0.0.2", Port: 8080, Routes: []config.Route{{Host: "*", Prefix: "/", TLS: "off"}}},
+			"api": {IP: "10.0.0.3", Port: 9000, Routes: []config.Route{{Host: "*", Prefix: "/api", TLS: "off"}, {Host: "api.example.com", Prefix: "/", TLS: "off"}}},
 			"db":  {IP: "10.0.0.4", Port: 5432},
 		},
 	}}
 	states[0].Services["db"].VIP = "10.77.1.4"
-	lds, cds, err := envoyResources(states, 10080, "10.77.0.2")
+	lds, cds, err := envoyResources(states, 10080, 443, "10.77.0.1", "10.77.0.2")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,8 +33,8 @@ func TestEnvoyResources(t *testing.T) {
 	if err := json.Unmarshal(cds, &c); err != nil {
 		t.Fatal(err)
 	}
-	if len(c.Resources) != 3 {
-		t.Errorf("want 3 clusters, got %d", len(c.Resources))
+	if len(c.Resources) != 4 {
+		t.Errorf("want 4 clusters, got %d", len(c.Resources))
 	}
 	s := string(lds)
 	// longest prefix first within the default vhost
@@ -48,6 +48,194 @@ func TestEnvoyResources(t *testing.T) {
 	}
 	if !strings.Contains(s, `"api.example.com"`) || !strings.Contains(s, `"port_value": 10080`) {
 		t.Errorf("missing host vhost or listener port:\n%s", s)
+	}
+}
+
+func TestEnvoyTLSResources(t *testing.T) {
+	states := []*AppState{{
+		App: "demo",
+		Services: map[string]*ServiceState{
+			"web": {IP: "10.0.0.2", Port: 8080, Routes: []config.Route{
+				{Host: "secure.example.com", Prefix: "/", TLS: "acme"},
+				{Host: "plain.example.com", Prefix: "/", TLS: "off"},
+				{Host: "*", Prefix: "/", TLS: "self-signed"},
+			}},
+		},
+	}}
+	lds, _, err := envoyResources(states, envoyListenPort, 8443, "10.77.0.1", "10.77.0.2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Resources []map[string]any `json:"resources"`
+	}
+	if err := json.Unmarshal(lds, &doc); err != nil {
+		t.Fatal(err)
+	}
+	listener := func(name string) map[string]any {
+		t.Helper()
+		for _, resource := range doc.Resources {
+			if resource["name"] == name {
+				return resource
+			}
+		}
+		t.Fatalf("missing %s listener", name)
+		return nil
+	}
+
+	httpListener := listener("http")
+	httpChains := httpListener["filter_chains"].([]any)
+	httpManager := httpChains[0].(map[string]any)["filters"].([]any)[0].(map[string]any)["typed_config"].(map[string]any)
+	if httpManager["strip_any_host_port"] != true {
+		t.Fatal("HTTP manager does not strip host ports")
+	}
+	httpVHosts := httpManager["route_config"].(map[string]any)["virtual_hosts"].([]any)
+	seenACME := 0
+	plainServed, secureRedirect := false, false
+	for _, raw := range httpVHosts {
+		vhost := raw.(map[string]any)
+		routes := vhost["routes"].([]any)
+		first := routes[0].(map[string]any)
+		if first["match"].(map[string]any)["prefix"] == "/.well-known/acme-challenge/" &&
+			first["route"].(map[string]any)["cluster"] == "gci_acme" {
+			seenACME++
+		}
+		domains := vhost["domains"].([]any)
+		switch domains[0] {
+		case "plain.example.com":
+			for _, rr := range routes {
+				r := rr.(map[string]any)
+				if route, ok := r["route"].(map[string]any); ok && route["cluster"] == "demo_web" {
+					plainServed = true
+				}
+			}
+		case "secure.example.com":
+			for _, rr := range routes {
+				r := rr.(map[string]any)
+				if redirect, ok := r["redirect"].(map[string]any); ok {
+					secureRedirect = redirect["https_redirect"] == true && redirect["port_redirect"] == float64(8443)
+				}
+			}
+		}
+	}
+	if seenACME != len(httpVHosts) {
+		t.Fatalf("ACME challenge route appears in %d of %d vhosts", seenACME, len(httpVHosts))
+	}
+	if !plainServed || !secureRedirect {
+		t.Fatalf("plain HTTP route served=%v TLS redirect=%v", plainServed, secureRedirect)
+	}
+
+	httpsListener := listener("https")
+	if got := httpsListener["listener_filters"].([]any)[0].(map[string]any)["name"]; got != "envoy.filters.listener.tls_inspector" {
+		t.Fatalf("TLS listener filter = %v", got)
+	}
+	httpsChains := httpsListener["filter_chains"].([]any)
+	if len(httpsChains) != 1 {
+		t.Fatalf("SNI chains = %d, want one explicit host chain", len(httpsChains))
+	}
+	chain := httpsChains[0].(map[string]any)
+	if got := chain["filter_chain_match"].(map[string]any)["server_names"].([]any)[0]; got != "secure.example.com" {
+		t.Fatalf("SNI server name = %v", got)
+	}
+	sds := chain["transport_socket"].(map[string]any)["typed_config"].(map[string]any)["common_tls_context"].(map[string]any)["tls_certificate_sds_secret_configs"].([]any)[0].(map[string]any)
+	if sds["name"] != "secure.example.com" || sds["sds_config"].(map[string]any)["path_config_source"].(map[string]any)["path"] != "/etc/gci/certs/secure.example.com.json" {
+		t.Fatalf("explicit SNI SDS config = %#v", sds)
+	}
+	defaultChain := httpsListener["default_filter_chain"].(map[string]any)
+	defaultSDS := defaultChain["transport_socket"].(map[string]any)["typed_config"].(map[string]any)["common_tls_context"].(map[string]any)["tls_certificate_sds_secret_configs"].([]any)[0].(map[string]any)
+	if defaultSDS["name"] != "_default" {
+		t.Fatalf("default SDS secret = %v", defaultSDS["name"])
+	}
+	defaultFilter := defaultChain["filters"].([]any)[0].(map[string]any)["typed_config"].(map[string]any)
+	if defaultFilter["strip_any_host_port"] != true {
+		t.Fatal("HTTPS manager does not strip host ports")
+	}
+	headers := defaultFilter["request_headers_to_add"].([]any)
+	if headers[0].(map[string]any)["header"].(map[string]any)["value"] != "https" {
+		t.Fatal("HTTPS manager does not set X-Forwarded-Proto")
+	}
+}
+
+func TestEnvoyUnknownHostFallbackDoesNotRedirect(t *testing.T) {
+	states := []*AppState{{
+		App: "demo",
+		Services: map[string]*ServiceState{
+			"web": {IP: "10.0.0.2", Port: 8080, Routes: []config.Route{
+				{Host: "secure.example.com", Prefix: "/", TLS: "acme"},
+			}},
+		},
+	}}
+	lds, _, err := envoyResources(states, envoyListenPort, 443, "10.77.0.1", "10.77.0.2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Resources []map[string]any `json:"resources"`
+	}
+	if err := json.Unmarshal(lds, &doc); err != nil {
+		t.Fatal(err)
+	}
+	var httpListener, httpsListener map[string]any
+	for _, resource := range doc.Resources {
+		switch resource["name"] {
+		case "http":
+			httpListener = resource
+		case "https":
+			httpsListener = resource
+		}
+	}
+	if httpListener == nil || httpsListener == nil {
+		t.Fatal("missing edge listener")
+	}
+	httpManager := httpListener["filter_chains"].([]any)[0].(map[string]any)["filters"].([]any)[0].(map[string]any)["typed_config"].(map[string]any)
+	httpVHosts := httpManager["route_config"].(map[string]any)["virtual_hosts"].([]any)
+	var defaultHTTP map[string]any
+	for _, raw := range httpVHosts {
+		vhost := raw.(map[string]any)
+		if vhost["domains"].([]any)[0] == "*" {
+			defaultHTTP = vhost
+			break
+		}
+	}
+	if defaultHTTP == nil {
+		t.Fatal("missing default HTTP vhost")
+	}
+	for _, raw := range defaultHTTP["routes"].([]any) {
+		route := raw.(map[string]any)
+		if _, ok := route["redirect"]; ok {
+			t.Fatal("unknown HTTP host is redirected instead of returning no route")
+		}
+	}
+	defaultChain := httpsListener["default_filter_chain"].(map[string]any)
+	manager := defaultChain["filters"].([]any)[0].(map[string]any)["typed_config"].(map[string]any)
+	vhosts := manager["route_config"].(map[string]any)["virtual_hosts"].([]any)
+	routes := vhosts[0].(map[string]any)["routes"].([]any)
+	if routes[0].(map[string]any)["direct_response"].(map[string]any)["status"] != float64(404) {
+		t.Fatal("unknown HTTPS SNI does not return 404")
+	}
+}
+
+func TestEnvoyUsesInternalEdgePorts(t *testing.T) {
+	lds, _, err := envoyResources(nil, envoyListenPort, 8443, "10.77.0.1", "10.77.0.2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Resources []map[string]any `json:"resources"`
+	}
+	if err := json.Unmarshal(lds, &doc); err != nil {
+		t.Fatal(err)
+	}
+	ports := map[string]float64{}
+	for _, listener := range doc.Resources {
+		socket := listener["address"].(map[string]any)["socket_address"].(map[string]any)
+		ports[listener["name"].(string)] = socket["port_value"].(float64)
+	}
+	if ports["http"] != float64(envoyListenPort) {
+		t.Fatalf("HTTP listener port = %v, want %d", ports["http"], envoyListenPort)
+	}
+	if ports["https"] != float64(envoyHTTPSListenPort) {
+		t.Fatalf("HTTPS listener port = %v, want %d", ports["https"], envoyHTTPSListenPort)
 	}
 }
 

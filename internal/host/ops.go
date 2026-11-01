@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strings"
 	"text/tabwriter"
+	"time"
 )
 
 func Status(ctx context.Context, w io.Writer, app string) error {
@@ -37,7 +38,43 @@ func Status(ctx context.Context, w io.Writer, app string) error {
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", name, state, unit, addr, s.IP, s.Rev[:8], s.Container)
 	}
-	return tw.Flush()
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+	hosts := map[string]RouteTLSSettings{}
+	for _, service := range st.Services {
+		for _, route := range service.Routes {
+			settings := tlsSettings(route)
+			if settings.Mode != "off" {
+				hosts[route.Host] = settings
+			}
+		}
+	}
+	if len(hosts) == 0 {
+		return nil
+	}
+	certificates := tabwriter.NewWriter(w, 0, 2, 2, ' ', 0)
+	fmt.Fprintln(certificates, "\nCERTIFICATE\tMODE\tSOURCE\tISSUER\tEXPIRES")
+	for _, host := range sortedKeys(hosts) {
+		meta := CertificateMeta{}
+		if cert, err := readStoredCertificate(host); err == nil {
+			meta = cert.Meta
+		}
+		expires := "-"
+		if !meta.NotAfter.IsZero() {
+			expires = meta.NotAfter.Format(time.RFC3339)
+		}
+		fmt.Fprintf(certificates, "%s\t%s\t%s\t%s\t%s\n",
+			host, hosts[host].Mode, fallback(meta.Source), fallback(meta.Issuer), expires)
+	}
+	return certificates.Flush()
+}
+
+func fallback(value string) string {
+	if value == "" {
+		return "-"
+	}
+	return value
 }
 
 func Logs(ctx context.Context, w io.Writer, app, svc string, lines int, follow bool) error {
@@ -118,5 +155,5 @@ func Remove(ctx context.Context, w io.Writer, app string, volumes bool) error {
 	if err := os.RemoveAll(appDir(app)); err != nil {
 		return err
 	}
-	return writeEnvoyConfig(envoyListenPort)
+	return writeEnvoyConfig(ctx)
 }

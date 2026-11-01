@@ -49,6 +49,8 @@ secrets    = { DATABASE_URL = "database-url" }
 
 See [`examples/platform`](examples/platform) for the full example, and [docs](docs/) for the configuration and command reference.
 
+Routed hosts use HTTPS by default: public DNS names use Let's Encrypt, while `*`, wildcard, localhost, and IP hosts use self-signed certificates. HTTP redirects to HTTPS unless the route sets `tls = "off"`. Bootstrap publishes HTTPS on port 443 by default; see the [TLS configuration guide](docs/configuration.md#tls-and-certificates) for custom certificates and ACME options.
+
 ## How a deploy works
 
 1. The client packs each `source` directory into a deterministic tarball and uploads it only if its hash is new on the host.
