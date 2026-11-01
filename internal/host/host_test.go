@@ -211,3 +211,15 @@ func TestEnvFileQuoting(t *testing.T) {
 		t.Errorf("compound command must not be exec'd: %q", s)
 	}
 }
+
+func TestHealthScript(t *testing.T) {
+	if got, want := healthScript("check --ready"), "#!/bin/sh\nset -e\ncheck --ready\n"; got != want {
+		t.Fatalf("healthScript() = %q, want %q", got, want)
+	}
+}
+
+func TestSanitizeHealthOutputRedactsSecret(t *testing.T) {
+	if got, want := sanitizeHealthOutput("check failed: private-value", map[string]string{"TOKEN": "private-value"}), "check failed: [REDACTED]"; got != want {
+		t.Fatalf("sanitizeHealthOutput() = %q, want %q", got, want)
+	}
+}

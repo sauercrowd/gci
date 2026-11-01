@@ -26,6 +26,7 @@ reuse = "dependencies"     # dependencies (default), build (all output), or noth
 command = "node server.js"
 port = 8080
 health = "/healthz"        # HTTP check before Envoy switches traffic
+# health_command = "./bin/check"  # extra check run inside the new container
 routes = [{ host = "%[1]s.localhost", prefix = "/" }]
 # env = { NODE_ENV = "production" }
 # secrets = { SESSION_SECRET = "session-secret" }  # gci secret set session-secret
