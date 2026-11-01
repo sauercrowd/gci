@@ -14,9 +14,14 @@ import (
 )
 
 var rootCmd = &cobra.Command{
-	Use:           "gci",
-	Short:         "Deploy services into Nix-provisioned Incus containers behind Envoy",
-	Long:          "GCI 2.0 is being rebuilt.",
+	Use:   "gci",
+	Short: "Deploy services into Nix-provisioned Incus containers behind Envoy",
+	Long: `gci deploys services onto your own hosts without building images.
+
+A host is bootstrapped once (Incus, Nix, a bridge network, a base container
+image and an Envoy front door). Each deploy then only realises the Nix
+packages a service needs (a no-op when they are already present), ships the
+service's source directory, and swaps in a new container once it is healthy.`,
 	SilenceUsage:  true,
 	SilenceErrors: true,
 }

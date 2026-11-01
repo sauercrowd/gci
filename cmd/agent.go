@@ -38,6 +38,25 @@ func init() {
 		},
 	}
 
+	hasSource := &cobra.Command{
+		Use:  "has-source <app> <service> <hash>",
+		Args: cobra.ExactArgs(3),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !host.HasSource(args[0], args[1], args[2]) {
+				return fmt.Errorf("missing")
+			}
+			return nil
+		},
+	}
+
+	receive := &cobra.Command{
+		Use:  "receive-source <app> <service> <hash>",
+		Args: cobra.ExactArgs(3),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return host.ReceiveSource(args[0], args[1], args[2], os.Stdin)
+		},
+	}
+
 	status := &cobra.Command{
 		Use:  "status <app>",
 		Args: cobra.ExactArgs(1),
@@ -75,6 +94,6 @@ func init() {
 		},
 	}
 
-	agent.AddCommand(bootstrap, apply, status, logs, rm, firewall)
+	agent.AddCommand(bootstrap, apply, hasSource, receive, status, logs, rm, firewall)
 	rootCmd.AddCommand(agent)
 }

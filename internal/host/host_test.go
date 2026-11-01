@@ -32,6 +32,7 @@ func TestEnvoyResources(t *testing.T) {
 		t.Errorf("want 3 clusters, got %d", len(c.Resources))
 	}
 	s := string(lds)
+	// longest prefix first within the default vhost
 	if strings.Index(s, `"prefix": "/api"`) > strings.Index(s, `"cluster": "demo_web"`) {
 		t.Errorf("/api route must precede / route:\n%s", s)
 	}
@@ -46,20 +47,28 @@ func TestEnvoyResources(t *testing.T) {
 }
 
 func TestRevisionIgnoresRoutes(t *testing.T) {
-	cfg := &config.Config{
-		App: "demo",
-		Services: map[string]*config.Service{
-			"web": {Command: "serve", Port: 8080, Routes: []config.Route{{Host: "one.test", Prefix: "/"}}},
-		},
+	cfg := &config.Config{App: "a", Services: map[string]*config.Service{"web": {Command: "x", Port: 1}}}
+	r1 := revision(cfg, "web", "/nix/store/env", "src1")
+	cfg.Services["web"].Routes = []config.Route{{Host: "*", Prefix: "/"}}
+	if r2 := revision(cfg, "web", "/nix/store/env", "src1"); r1 != r2 {
+		t.Errorf("routes changed revision")
 	}
-	first := revision(cfg, "web", "/nix/store/env")
-	cfg.Services["web"].Routes = []config.Route{{Host: "two.test", Prefix: "/api"}}
-	if got := revision(cfg, "web", "/nix/store/env"); got != first {
-		t.Fatalf("route change changed revision: %s != %s", got, first)
+	if r3 := revision(cfg, "web", "/nix/store/env", "src2"); r1 == r3 {
+		t.Errorf("source change did not change revision")
 	}
-	cfg.Services["web"].Command = "serve --debug"
-	if got := revision(cfg, "web", "/nix/store/env"); got == first {
-		t.Fatal("command change did not change revision")
+	if r4 := revision(cfg, "web", "/nix/store/other", "src1"); r1 == r4 {
+		t.Errorf("env change did not change revision")
+	}
+}
+
+func TestPruneReleases(t *testing.T) {
+	rels := []*Release{{Key: "one"}, {Key: "two"}, {Key: "three"}, {Key: "four"}}
+	kept, dropped := pruneReleases(rels, "one", 3)
+	if len(kept) != 3 || kept[0].Key != "one" || kept[1].Key != "three" || kept[2].Key != "four" {
+		t.Fatalf("kept = %#v", kept)
+	}
+	if len(dropped) != 1 || dropped[0].Key != "two" {
+		t.Fatalf("dropped = %#v", dropped)
 	}
 }
 

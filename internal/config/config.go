@@ -4,6 +4,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -29,7 +30,12 @@ type Config struct {
 type Service struct {
 	// Packages are Nix expressions evaluated with nixpkgs in scope,
 	// e.g. "postgresql_16" or "python3.withPackages (p: [p.psycopg])".
-	Packages  []string          `toml:"packages" json:"packages"`
+	Packages []string `toml:"packages" json:"packages"`
+	// Source is a local directory shipped to the host and snapshotted at /app.
+	Source    string            `toml:"source,omitempty" json:"source,omitempty"`
+	Install   string            `toml:"install,omitempty" json:"install,omitempty"`
+	Build     string            `toml:"build,omitempty" json:"build,omitempty"`
+	Reuse     string            `toml:"reuse,omitempty" json:"reuse,omitempty"`
 	Command   string            `toml:"command" json:"command"`
 	Setup     string            `toml:"setup,omitempty" json:"setup,omitempty"`
 	User      string            `toml:"user,omitempty" json:"user"`
@@ -68,6 +74,12 @@ func Load(path string) (*Config, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
+	base := filepath.Dir(path)
+	for _, svc := range cfg.Services {
+		if svc.Source != "" && !filepath.IsAbs(svc.Source) {
+			svc.Source = filepath.Join(base, svc.Source)
+		}
+	}
 	return &cfg, nil
 }
 
@@ -78,6 +90,9 @@ func (c *Config) applyDefaults() {
 	for _, svc := range c.Services {
 		if svc.User == "" {
 			svc.User = "gci"
+		}
+		if svc.Reuse == "" {
+			svc.Reuse = "dependencies"
 		}
 		if svc.HealthTimeout == 0 {
 			svc.HealthTimeout = 120
@@ -112,6 +127,12 @@ func (c *Config) Validate() error {
 			if _, ok := c.Services[dep]; !ok {
 				return fmt.Errorf("service %q depends on unknown service %q", name, dep)
 			}
+		}
+		if svc.Reuse != "dependencies" && svc.Reuse != "build" && svc.Reuse != "nothing" {
+			return fmt.Errorf("service %q: reuse must be dependencies, build, or nothing", name)
+		}
+		if (svc.Install != "" || svc.Build != "") && svc.Source == "" {
+			return fmt.Errorf("service %q: install and build require source", name)
 		}
 		for env := range svc.Env {
 			if !envNameRe.MatchString(env) {

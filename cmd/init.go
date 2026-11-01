@@ -19,6 +19,10 @@ app = "%[1]s"
 
 [services.web]
 packages = ["nodejs_22"]   # Nix packages (nixpkgs attribute names)
+source = "."               # uploaded and copied to /app
+# install = "npm install --no-audit --no-fund" # package manager reuses installed dependencies
+# build = "npm run build"  # run once per release, before activation
+reuse = "dependencies"     # dependencies (default), build (all output), or nothing (fresh)
 command = "node server.js"
 port = 8080
 health = "/healthz"        # HTTP check before Envoy switches traffic

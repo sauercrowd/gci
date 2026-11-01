@@ -1,0 +1,13 @@
+{
+  "name": "gci-node-example",
+  "private": true,
+  "scripts": {
+    "build": "esbuild src/client.js --bundle --outfile=dist/client.js && cp index.html dist/index.html"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  }
+}
