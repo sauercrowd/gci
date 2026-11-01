@@ -122,6 +122,19 @@ func exists(ctx context.Context, args ...string) bool {
 	return err == nil
 }
 
+func volumePool(ctx context.Context, hc *HostConfig, name string) (string, error) {
+	if exists(ctx, "storage", "volume", "show", hc.StoragePool, name) {
+		return hc.StoragePool, nil
+	}
+	if hc.StoragePool != legacyPool && exists(ctx, "storage", "volume", "show", legacyPool, name) {
+		return legacyPool, nil
+	}
+	if _, err := incus(ctx, "storage", "volume", "create", hc.StoragePool, name); err != nil {
+		return "", err
+	}
+	return hc.StoragePool, nil
+}
+
 func deleteInstance(ctx context.Context, name string) error {
 	_, err := incus(ctx, "delete", "--force", name)
 	return err
