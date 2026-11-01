@@ -148,8 +148,7 @@ func (h *Host) EnsureAgent(ctx context.Context, w io.Writer) error {
 		}
 	}
 	fmt.Fprintf(w, "installing gci agent on %s\n", h.Name)
-	tmp := AgentPath + ".tmp"
-	cmd := h.sudo(fmt.Sprintf("sh -c 'cat > %s && chmod 755 %s && mv %s %s'", tmp, tmp, tmp, AgentPath))
+	cmd := h.sudo(fmt.Sprintf("sh -c 'tmp=$(mktemp %s.XXXXXX) || exit 1; if ! cat > \"$tmp\" || ! chmod 755 \"$tmp\" || ! mv \"$tmp\" %s; then rm -f \"$tmp\"; exit 1; fi'", AgentPath, AgentPath))
 	var errb bytes.Buffer
 	if err := h.run(ctx, cmd, bytes.NewReader(content), io.Discard, &errb); err != nil {
 		return fmt.Errorf("upload agent: %w: %s", err, strings.TrimSpace(errb.String()))
