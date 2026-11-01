@@ -1,8 +1,41 @@
+# Postgres + ClickHouse + a Python app (API + static frontend) behind Envoy.
 app = "platform"
 
+[services.postgres]
+packages = ["postgresql_16"]
+volumes = { pgdata = "/var/lib/postgresql" }
+env = { PGDATA = "/var/lib/postgresql/16" }
+secrets = { POSTGRES_PASSWORD = "postgres-password" }
+# runs before every start; initialises the cluster on first boot only
+setup = '''
+if [ ! -s "$PGDATA/PG_VERSION" ]; then
+  printf '%s' "$POSTGRES_PASSWORD" > /tmp/pwfile
+  initdb -D "$PGDATA" -U postgres --auth-local=trust --auth-host=scram-sha-256 --pwfile=/tmp/pwfile
+  rm /tmp/pwfile
+  echo "host all all 0.0.0.0/0 scram-sha-256" >> "$PGDATA/pg_hba.conf"
+fi
+'''
+command = "postgres -D $PGDATA -c listen_addresses=* -k /tmp"
+port = 5432
+health_command = "pg_isready -h 127.0.0.1 -p 5432 -U postgres"
+memory = "1GiB"
+
+[services.clickhouse]
+packages = ["clickhouse"]
+volumes = { chdata = "/var/lib/clickhouse" }
+command = "clickhouse server -- --path=/var/lib/clickhouse/ --listen_host=0.0.0.0"
+port = 8123
+health = "/ping"
+memory = "2GiB"
+
 [services.web]
-packages = ["python3"]
-command = "python3 -m http.server 8080 --directory /home/gci"
+packages = ["python3.withPackages (p: [ p.psycopg ])"]
+source = "./app"
+command = "python3 server.py"
 port = 8080
-health = "/"
-routes = [{ host = "platform.gci.test", prefix = "/" }]
+health = "/healthz"
+depends_on = ["postgres", "clickhouse"]
+migrate = "python3 server.py migrate"
+routes = [{ prefix = "/" }]
+env = { CLICKHOUSE_URL = "http://clickhouse.platform.internal:8123" }
+secrets = { DATABASE_URL = "database-url" }

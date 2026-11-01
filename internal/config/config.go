@@ -31,12 +31,13 @@ type Config struct {
 type Service struct {
 	// Packages are Nix expressions evaluated with nixpkgs in scope,
 	// e.g. "postgresql_16" or "python3.withPackages (p: [p.psycopg])".
+	Packages []string `toml:"packages" json:"packages"`
 	// Source is a local directory shipped to the host and snapshotted at /app.
-	Packages      []string          `toml:"packages" json:"packages"`
 	Source        string            `toml:"source,omitempty" json:"source,omitempty"`
 	Install       string            `toml:"install,omitempty" json:"install,omitempty"`
 	Build         string            `toml:"build,omitempty" json:"build,omitempty"`
 	Reuse         string            `toml:"reuse,omitempty" json:"reuse,omitempty"`
+	Migrate       string            `toml:"migrate,omitempty" json:"migrate,omitempty"`
 	Command       string            `toml:"command" json:"command"`
 	Setup         string            `toml:"setup,omitempty" json:"setup,omitempty"`
 	User          string            `toml:"user,omitempty" json:"user"`
@@ -136,6 +137,9 @@ func (c *Config) Validate() error {
 		}
 		if (svc.Install != "" || svc.Build != "") && svc.Source == "" {
 			return fmt.Errorf("service %q: install and build require source", name)
+		}
+		if strings.TrimSpace(svc.Migrate) == "" && svc.Migrate != "" {
+			return fmt.Errorf("service %q: migrate must not be blank", name)
 		}
 		for env := range svc.Env {
 			if !envNameRe.MatchString(env) {

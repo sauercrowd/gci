@@ -72,6 +72,7 @@ func TestValidate(t *testing.T) {
 		"used by both":                     `app = "a"` + "\n[services.a]\ncommand = \"x\"\nvolumes = { v = \"/v\" }\n[services.b]\ncommand = \"x\"\nvolumes = { v = \"/w\" }",
 		"health requires port":             `app = "a"` + "\n[services.a]\ncommand = \"x\"\nhealth = \"/h\"",
 		"health_command must not be blank": `app = "a"` + "\n[services.a]\ncommand = \"x\"\nhealth_command = \"   \"",
+		"missing in the target":            `app = "a"` + "\n[services.a]\ncommand = \"x\"\nimage = \"nginx\"",
 	}
 	for want, content := range cases {
 		_, err := Load(write(t, content))
@@ -117,6 +118,34 @@ reuse = "lockfile"
 `))
 	if err == nil || !strings.Contains(err.Error(), "reuse must be") {
 		t.Fatalf("invalid reuse error = %v", err)
+	}
+}
+
+func TestMigrateWithVolumesIsAllowed(t *testing.T) {
+	cfg, err := Load(write(t, `
+app = "demo"
+[services.db]
+command = "postgres"
+migrate = "migrate"
+volumes = { data = "/var/lib/data" }
+`))
+	if err != nil {
+		t.Fatalf("migrate with volumes: %v", err)
+	}
+	if !cfg.Services["db"].Stateful() {
+		t.Fatal("service with volumes is not stateful")
+	}
+}
+
+func TestMigrateCommandMustNotBeBlank(t *testing.T) {
+	_, err := Load(write(t, `
+app = "demo"
+[services.web]
+command = "server"
+migrate = "   "
+`))
+	if err == nil || !strings.Contains(err.Error(), "migrate must not be blank") {
+		t.Fatalf("blank migrate error = %v", err)
 	}
 }
 
