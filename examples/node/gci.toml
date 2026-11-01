@@ -10,3 +10,4 @@ port = 8080
 health = "/healthz"
 routes = [{ host = "node.localhost", prefix = "/" }]
 env = { APP_VERSION = "1.0.0" }
+secrets = { SESSION_SECRET = "session-secret" }

@@ -81,6 +81,7 @@ func init() {
 				return err
 			}
 			defer h.Close()
+			ctx := cmd.Context()
 			plan := host.Plan{Config: cfg, Sources: map[string]string{}, Clean: clean || cleanEnabled(os.Getenv("GCI_CLEAN"))}
 			for _, name := range sortedNames(cfg) {
 				svc := cfg.Services[name]
@@ -92,19 +93,20 @@ func init() {
 					return fmt.Errorf("%s: pack %s: %w", name, svc.Source, err)
 				}
 				plan.Sources[name] = hash
-				if h.Agent(cmd.Context(), []string{"has-source", cfg.App, name, hash}, nil, io.Discard, io.Discard) == nil {
+				var out bytes.Buffer
+				if err := h.Agent(ctx, []string{"has-source", cfg.App, name, hash}, nil, &out, io.Discard); err == nil {
 					continue
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "==> %s: uploading source %s (%d KiB)\n", name, hash, len(tarball)/1024)
-				if err := h.Agent(cmd.Context(), []string{"receive-source", cfg.App, name, hash}, bytes.NewReader(tarball), cmd.OutOrStdout(), cmd.ErrOrStderr()); err != nil {
-					return err
+				if err := h.Agent(ctx, []string{"receive-source", cfg.App, name, hash}, bytes.NewReader(tarball), cmd.OutOrStdout(), cmd.ErrOrStderr()); err != nil {
+					return fmt.Errorf("%s: upload source: %w", name, err)
 				}
 			}
 			raw, err := json.Marshal(plan)
 			if err != nil {
 				return err
 			}
-			return h.Agent(cmd.Context(), []string{"apply"}, bytes.NewReader(raw), cmd.OutOrStdout(), cmd.ErrOrStderr())
+			return h.Agent(ctx, []string{"apply"}, bytes.NewReader(raw), cmd.OutOrStdout(), cmd.ErrOrStderr())
 		},
 	}
 	deploy.Flags().BoolVar(&clean, "clean", false, "rebuild source services from a fresh base")
@@ -163,7 +165,66 @@ func init() {
 	}
 	rm.Flags().BoolVar(&volumes, "volumes", false, "also delete the app's volumes (data loss)")
 
-	rootCmd.AddCommand(bootstrap, deploy, status, logs, rm)
+	secret := &cobra.Command{Use: "secret", Short: "Manage app secrets"}
+	secretSet := &cobra.Command{
+		Use:   "set <name>",
+		Short: "Read a secret value from stdin",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, h, err := project(cmd, true)
+			if err != nil {
+				return err
+			}
+			defer h.Close()
+			if info, err := os.Stdin.Stat(); err == nil && info.Mode()&os.ModeCharDevice != 0 {
+				fmt.Fprintln(cmd.ErrOrStderr(), "reading secret from stdin, end with Ctrl-D")
+			}
+			value, err := io.ReadAll(io.LimitReader(os.Stdin, 64*1024+1))
+			if err != nil {
+				return err
+			}
+			if len(value) > 64*1024 {
+				return fmt.Errorf("secret exceeds 64 KiB")
+			}
+			if bytes.HasSuffix(value, []byte("\r\n")) {
+				value = value[:len(value)-2]
+			} else if bytes.HasSuffix(value, []byte("\n")) {
+				value = value[:len(value)-1]
+			}
+			if err := h.Agent(cmd.Context(), []string{"secret-set", cfg.App, args[0]}, bytes.NewReader(value), cmd.OutOrStdout(), cmd.ErrOrStderr()); err != nil {
+				return err
+			}
+			return nil
+		},
+	}
+	secretList := &cobra.Command{
+		Use:   "ls",
+		Short: "List secret names",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, h, err := project(cmd, true)
+			if err != nil {
+				return err
+			}
+			defer h.Close()
+			return h.Agent(cmd.Context(), []string{"secret-ls", cfg.App}, nil, cmd.OutOrStdout(), cmd.ErrOrStderr())
+		},
+	}
+	secretRemove := &cobra.Command{
+		Use:   "rm <name>",
+		Short: "Remove a secret",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, h, err := project(cmd, true)
+			if err != nil {
+				return err
+			}
+			defer h.Close()
+			return h.Agent(cmd.Context(), []string{"secret-rm", cfg.App, args[0]}, nil, cmd.OutOrStdout(), cmd.ErrOrStderr())
+		},
+	}
+	secret.AddCommand(secretSet, secretList, secretRemove)
+	rootCmd.AddCommand(bootstrap, deploy, status, logs, rm, secret)
 }
 
 func cleanEnabled(value string) bool {

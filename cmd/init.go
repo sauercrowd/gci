@@ -28,6 +28,7 @@ port = 8080
 health = "/healthz"        # HTTP check before Envoy switches traffic
 routes = [{ host = "%[1]s.localhost", prefix = "/" }]
 # env = { NODE_ENV = "production" }
+# secrets = { SESSION_SECRET = "session-secret" }  # gci secret set session-secret
 `
 
 var nonNameChars = regexp.MustCompile(`[^a-z0-9-]+`)

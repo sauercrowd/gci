@@ -19,6 +19,7 @@ const DefaultFileName = "gci.toml"
 
 var nameRe = regexp.MustCompile(`^[a-z][a-z0-9-]{0,23}$`)
 var envNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+var secretNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,62}$`)
 
 type Config struct {
 	App      string              `toml:"app" json:"app"`
@@ -40,6 +41,7 @@ type Service struct {
 	Setup     string            `toml:"setup,omitempty" json:"setup,omitempty"`
 	User      string            `toml:"user,omitempty" json:"user"`
 	Env       map[string]string `toml:"env,omitempty" json:"env,omitempty"`
+	Secrets   map[string]string `toml:"secrets,omitempty" json:"secrets,omitempty"`
 	Port      int               `toml:"port,omitempty" json:"port,omitempty"`
 	Health    string            `toml:"health,omitempty" json:"health,omitempty"`
 	Volumes   map[string]string `toml:"volumes,omitempty" json:"volumes,omitempty"`
@@ -139,6 +141,17 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("service %q: environment variable %q is invalid", name, env)
 			}
 		}
+		for env, secret := range svc.Secrets {
+			if !envNameRe.MatchString(env) {
+				return fmt.Errorf("service %q: secret environment variable %q is invalid", name, env)
+			}
+			if !secretNameRe.MatchString(secret) {
+				return fmt.Errorf("service %q: secret name %q is invalid", name, secret)
+			}
+			if _, ok := svc.Env[env]; ok {
+				return fmt.Errorf("service %q: secret environment variable %q is also defined in env", name, env)
+			}
+		}
 		if len(svc.Routes) > 0 && svc.Port == 0 {
 			return fmt.Errorf("service %q: routes require port", name)
 		}
@@ -173,6 +186,13 @@ func (c *Config) Validate() error {
 func ValidateAppName(name string) error {
 	if !nameRe.MatchString(name) {
 		return fmt.Errorf("app %q must match %s", name, nameRe)
+	}
+	return nil
+}
+
+func ValidateSecretName(name string) error {
+	if !secretNameRe.MatchString(name) {
+		return fmt.Errorf("secret name %q must match %s", name, secretNameRe)
 	}
 	return nil
 }

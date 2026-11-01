@@ -113,6 +113,7 @@ func Remove(ctx context.Context, w io.Writer, app string, volumes bool) error {
 				fmt.Fprintf(w, "keeping volume %s (use --volumes to delete)\n", volumeName(app, vol))
 			}
 		}
+		fmt.Fprintf(w, "keeping gci secrets (use `gci secret rm` to remove them)\n")
 	}
 	if err := os.RemoveAll(appDir(app)); err != nil {
 		return err

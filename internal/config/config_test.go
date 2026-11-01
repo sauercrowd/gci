@@ -65,8 +65,11 @@ func TestValidate(t *testing.T) {
 		"used by both":                     `app = "a"` + "\n[services.a]\ncommand = \"x\"\nvolumes = { v = \"/v\" }\n[services.b]\ncommand = \"x\"\nvolumes = { v = \"/w\" }",
 		"health requires port":             `app = "a"` + "\n[services.a]\ncommand = \"x\"\nhealth = \"/h\"",
 		"environment variable":             `app = "a"` + "\n[services.a]\ncommand = \"x\"\nenv = { \"bad-env\" = \"value\" }",
+		"secret environment":               `app = "a"` + "\n[services.a]\ncommand = \"x\"\nsecrets = { \"bad-env\" = \"valid\" }",
 		"reuse must be":                    `app = "a"` + "\n[services.a]\ncommand = \"x\"\nreuse = \"lockfile\"",
 		"install and build require source": `app = "a"` + "\n[services.a]\ncommand = \"x\"\ninstall = \"npm install\"",
+		"secret name":                      `app = "a"` + "\n[services.a]\ncommand = \"x\"\nsecrets = { TOKEN = \"Invalid_Name\" }",
+		"also defined in env":              `app = "a"` + "\n[services.a]\ncommand = \"x\"\nenv = { TOKEN = \"x\" }\nsecrets = { TOKEN = \"token\" }",
 		"build require source":             `app = "a"` + "\n[services.a]\ncommand = \"x\"\nbuild = \"npm run build\"",
 	}
 	for want, content := range cases {
@@ -98,5 +101,18 @@ reuse = "lockfile"
 `))
 	if err == nil || !strings.Contains(err.Error(), "reuse must be") {
 		t.Fatalf("invalid reuse error = %v", err)
+	}
+}
+
+func TestValidateSecretName(t *testing.T) {
+	for _, name := range []string{"ok", "secret.1", "secret-name_2"} {
+		if err := ValidateSecretName(name); err != nil {
+			t.Errorf("%q: %v", name, err)
+		}
+	}
+	for _, name := range []string{"", "Upper", "has space", strings.Repeat("a", 64), "-leading"} {
+		if err := ValidateSecretName(name); err == nil {
+			t.Errorf("%q unexpectedly valid", name)
+		}
 	}
 }

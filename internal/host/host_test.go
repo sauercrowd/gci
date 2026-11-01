@@ -1,7 +1,12 @@
 package host
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -59,6 +64,128 @@ func TestRevisionIgnoresRoutes(t *testing.T) {
 	if r4 := revision(cfg, "web", "/nix/store/other", "src1"); r1 == r4 {
 		t.Errorf("env change did not change revision")
 	}
+}
+
+func TestSecretRevisionScope(t *testing.T) {
+	useTestSecretRoot(t)
+	cfg := &config.Config{App: "a", Services: map[string]*config.Service{
+		"web": {Command: "run", Secrets: map[string]string{"SESSION_SECRET": "session-secret"}},
+		"db":  {Command: "db", Secrets: map[string]string{"PASSWORD": "db-password"}},
+	}}
+	digest := func(values map[string]string) string {
+		t.Helper()
+		got, err := secretDigest(values)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	one := revisionWithSecrets(cfg, "web", "/nix/store/env", "release", digest(map[string]string{"SESSION_SECRET": "one"}))
+	two := revisionWithSecrets(cfg, "web", "/nix/store/env", "release", digest(map[string]string{"SESSION_SECRET": "two"}))
+	if one == two {
+		t.Fatal("secret value did not change revision")
+	}
+	other := revisionWithSecrets(cfg, "web", "/nix/store/env", "release", digest(map[string]string{"SESSION_SECRET": "one"}))
+	cfg.Services["db"].Secrets["PASSWORD"] = "another-password"
+	if got := revisionWithSecrets(cfg, "web", "/nix/store/env", "release", digest(map[string]string{"SESSION_SECRET": "one"})); got != other {
+		t.Fatal("another service's secret changed web revision")
+	}
+}
+
+func TestSecretDigestUsesPersistentHMACKey(t *testing.T) {
+	useTestSecretRoot(t)
+	values := map[string]string{"TOKEN": "low-entropy"}
+	first, err := secretDigest(values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := secretDigest(values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != second {
+		t.Fatal("same secret produced different digests")
+	}
+	changed, err := secretDigest(map[string]string{"TOKEN": "different"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == changed {
+		t.Fatal("different secret produced the same digest")
+	}
+	keyPath := filepath.Join(secretRoot, secretDigestKeyName)
+	key, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(key) != sha256.Size {
+		t.Fatalf("key length = %d, want %d", len(key), sha256.Size)
+	}
+	keyInfo, err := os.Stat(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if keyInfo.Mode().Perm() != 0o600 {
+		t.Fatalf("key mode = %04o, want 0600", keyInfo.Mode().Perm())
+	}
+	dirInfo, err := os.Stat(secretRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dirInfo.Mode().Perm() != 0o700 {
+		t.Fatalf("secrets dir mode = %04o, want 0700", dirInfo.Mode().Perm())
+	}
+	h := hmac.New(sha256.New, key)
+	hashString(h, "TOKEN")
+	hashString(h, "low-entropy")
+	if first != hex.EncodeToString(h.Sum(nil)) {
+		t.Fatal("digest is not the expected HMAC-SHA256")
+	}
+}
+
+func TestSecretDigestWithoutSecretsPreservesLegacyHash(t *testing.T) {
+	useTestSecretRoot(t)
+	got, err := secretDigest(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" {
+		t.Fatalf("empty digest = %s, want legacy empty SHA-256", got)
+	}
+	if _, err := os.Stat(secretRoot); !os.IsNotExist(err) {
+		t.Fatalf("secret digest created key storage with no secrets: %v", err)
+	}
+}
+
+func TestListSecretsOmitsDigestKey(t *testing.T) {
+	useTestSecretRoot(t)
+	appDir := filepath.Join(secretRoot, "demo")
+	if err := os.MkdirAll(appDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for path, value := range map[string]string{
+		filepath.Join(secretRoot, secretDigestKeyName): "host key",
+		filepath.Join(appDir, secretDigestKeyName):     "app key",
+		filepath.Join(appDir, "token"):                 "secret",
+	} {
+		if err := os.WriteFile(path, []byte(value), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	names, err := ListSecrets("demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(names) != 1 || names[0] != "token" {
+		t.Fatalf("ListSecrets() = %v, want [token]", names)
+	}
+}
+
+func useTestSecretRoot(t *testing.T) {
+	t.Helper()
+	previous := secretRoot
+	secretRoot = filepath.Join(t.TempDir(), "secrets")
+	t.Cleanup(func() { secretRoot = previous })
 }
 
 func TestPruneReleases(t *testing.T) {
