@@ -1,7 +1,37 @@
 app = "platform"
 
-[services.web]
+[images.postgres]
+packages = ["postgresql_16"]
+
+[images.clickhouse]
+packages = ["clickhouse"]
+
+[images.web]
 packages = ["python3"]
+
+[services.postgres]
+image = "postgres"
+volumes = { pgdata = "/var/lib/postgresql" }
+env = { PGDATA = "/var/lib/postgresql/16" }
+setup = '''
+if [ ! -s "$PGDATA/PG_VERSION" ]; then
+  initdb -D "$PGDATA" -U postgres --auth-local=trust --auth-host=trust
+fi
+'''
+command = "postgres -D $PGDATA -c listen_addresses=* -k /tmp"
+port = 5432
+memory = "1GiB"
+
+[services.clickhouse]
+image = "clickhouse"
+volumes = { chdata = "/var/lib/clickhouse" }
+command = "clickhouse server -- --path=/var/lib/clickhouse/ --listen_host=0.0.0.0"
+port = 8123
+health = "/ping"
+memory = "2GiB"
+
+[services.web]
+image = "web"
 command = "python3 -m http.server 8080 --directory /home/gci"
 port = 8080
 health = "/"

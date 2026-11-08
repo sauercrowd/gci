@@ -1,10 +1,16 @@
 app = "nodeapp"
 
-[services.web]
+[images.web]
 packages = ["nodejs_22"]
 source = "./app"
-install = "npm install --no-audit --no-fund"
-build = "npm run build"
+carry_over = "deps"
+steps = [
+  { name = "deps", run = "npm install --no-audit --no-fund" },
+  { name = "build", run = "npm run build" },
+]
+
+[services.web]
+image = "web"
 command = "node server.js"
 port = 8080
 health = "/healthz"
