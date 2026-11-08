@@ -20,7 +20,7 @@ app = "%[1]s"
 [images.web]
 packages = ["nodejs_22"]   # Nix packages (nixpkgs attribute names)
 source = "."               # uploaded and copied to /app
-snapshot_step = "deps"     # next build starts from the state after this step; remove to always build fresh
+carry_over = "deps"     # next build starts with the files left after this step; all steps still run. Remove to always build fresh
 steps = [
   { name = "deps", run = "npm install --no-audit --no-fund" },
   # { name = "build", run = "npm run build" },

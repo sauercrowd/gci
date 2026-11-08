@@ -52,8 +52,8 @@ command = "cache"
 	if got := cfg.Images["web"].Source; got != filepath.Join(filepath.Dir(p), "app") {
 		t.Errorf("image source not resolved relative to config: %s", got)
 	}
-	if cfg.Images["web"].SnapshotStep != "" {
-		t.Errorf("omitted snapshot_step defaulted to %q", cfg.Images["web"].SnapshotStep)
+	if cfg.Images["web"].CarryOver != "" {
+		t.Errorf("omitted carry_over defaulted to %q", cfg.Images["web"].CarryOver)
 	}
 	if !cfg.Services["db"].Stateful() || web.Stateful() {
 		t.Errorf("stateful detection wrong")
@@ -80,7 +80,7 @@ func TestValidate(t *testing.T) {
 		"step name":                     `app = "a"` + "\n[images.a]\nsteps = [{ name = \"Bad_Name\", run = \"true\" }]\n[services.a]\nimage = \"a\"\ncommand = \"x\"",
 		"duplicate step name":           `app = "a"` + "\n[images.a]\nsteps = [{ name = \"deps\", run = \"true\" }, { name = \"deps\", run = \"true\" }]\n[services.a]\nimage = \"a\"\ncommand = \"x\"",
 		"step run is required":          `app = "a"` + "\n[images.a]\nsteps = [{ name = \"deps\", run = \"  \" }]\n[services.a]\nimage = \"a\"\ncommand = \"x\"",
-		"snapshot_step":                 `app = "a"` + "\n[images.a]\nsnapshot_step = \"missing\"\nsteps = [{ name = \"deps\", run = \"true\" }]\n[services.a]\nimage = \"a\"\ncommand = \"x\"",
+		"carry_over":                    `app = "a"` + "\n[images.a]\ncarry_over = \"missing\"\nsteps = [{ name = \"deps\", run = \"true\" }]\n[services.a]\nimage = \"a\"\ncommand = \"x\"",
 		"image \"a\": environment":      `app = "a"` + "\n[images.a]\nenv = { \"bad-env\" = \"value\" }\n[services.a]\nimage = \"a\"\ncommand = \"x\"",
 		"strict mode":                   `app = "a"` + "\n[images.a]\nunknown = \"value\"\n[services.a]\nimage = \"a\"\ncommand = \"x\"",
 		"missing in the target struct":  `app = "a"` + "\n[images.a]\nsteps = [{ run = \"true\", unknown = \"value\" }]\n[services.a]\nimage = \"a\"\ncommand = \"x\"",
@@ -106,7 +106,7 @@ func TestReferencedImages(t *testing.T) {
 	cfg, err := Load(write(t, `
 app = "demo"
 [images.web]
-snapshot_step = "deps"
+carry_over = "deps"
 steps = [{ name = "deps", run = "true" }]
 [images.unused]
 [services.web]
