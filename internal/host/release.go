@@ -142,10 +142,10 @@ func prepareRelease(ctx context.Context, w io.Writer, hc *HostConfig, cfg *confi
 	if image.Source != "" {
 		srcDir = sourceDir(cfg.App, imageName, sourceHash)
 	}
-	chain := chainKey(baseFP, env, image.User, image.Env, image.SnapshotStep, image.Steps)
+	chain := chainKey(baseFP, env, image.User, image.Env, image.CarryOver, image.Steps)
 	key := releaseKey(baseFP, env, image.User, image.Env, sourceHash, image.Steps)
 	instanceName := releaseName(cfg.App, imageName, key)
-	snapshotIndex := stepIndex(image.Steps, image.SnapshotStep)
+	snapshotIndex := stepIndex(image.Steps, image.CarryOver)
 	hasStepSnapshot := snapshotIndex >= 0 && snapshotIndex < len(image.Steps)-1
 	snapshotIsLast := snapshotIndex >= 0 && snapshotIndex == len(image.Steps)-1
 	var previous *Release
@@ -166,7 +166,7 @@ func prepareRelease(ctx context.Context, w io.Writer, hc *HostConfig, cfg *confi
 			created = previous.Created
 		}
 	} else {
-		from, fresh := buildStart(st.Releases[imageName], chain, image.SnapshotStep, snapshotIsLast, clean)
+		from, fresh := buildStart(st.Releases[imageName], chain, image.CarryOver, snapshotIsLast, clean)
 		if fresh {
 			fmt.Fprintf(w, "==> %s: building from base image\n", imageName)
 		} else {
