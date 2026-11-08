@@ -24,8 +24,19 @@ func init() {
 	}
 	bootstrap.Flags().StringVar(&opts.Subnet, "subnet", "", "")
 	bootstrap.Flags().IntVar(&opts.HTTPPort, "http-port", 0, "")
+	bootstrap.Flags().IntVar(&opts.HTTPSPort, "https-port", 443, "")
 	bootstrap.Flags().StringVar(&opts.VIPRange, "vip-range", "", "")
 	bootstrap.Flags().StringVar(&opts.StorageSize, "storage-size", "50GiB", "")
+	bootstrap.Flags().StringVar(&opts.ACMEEmail, "acme-email", "", "")
+	bootstrap.Flags().StringVar(&opts.ACMEDirectory, "acme-directory", host.DefaultACMEDirectory, "")
+	bootstrap.Flags().StringVar(&opts.ACMECABundle, "acme-ca-bundle", "", "")
+
+	renew := &cobra.Command{
+		Use: "renew",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return host.Renew(cmd.Context(), cmd.OutOrStdout())
+		},
+	}
 
 	apply := &cobra.Command{
 		Use: "apply",
@@ -138,6 +149,6 @@ func init() {
 		},
 	}
 
-	agent.AddCommand(bootstrap, apply, hasSource, receive, status, logs, rm, secretSet, secretList, secretRemove, firewall)
+	agent.AddCommand(bootstrap, renew, apply, hasSource, receive, status, logs, rm, secretSet, secretList, secretRemove, firewall)
 	rootCmd.AddCommand(agent)
 }

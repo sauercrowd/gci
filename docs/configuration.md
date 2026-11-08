@@ -47,14 +47,35 @@ copy-on-write container.
 | `image` | **Required.** Name of an existing image. |
 | `command` | **Required.** Main process, run as the image user under systemd. |
 | `setup` | Shell script run before every start. |
-| `migrate` | Optional migration command. Stateless services migrate in a temporary copy; services with volumes migrate after the old container stops and before the new one starts. Migrations have a 10-minute timeout and should be idempotent and backwards-compatible. |
+| `migrate` | Optional command run as the image user for changed services. Stateless services migrate in a temporary copy while the old version serves; services with volumes migrate after the old container stops, with volumes attached, before the new one starts. Migrations have a 10-minute timeout and should be idempotent and backwards-compatible. |
 | `env` | Runtime environment; overrides image environment. |
 | `secrets` | `ENV_VAR = "secret-name"` mappings injected only at activation, never into image builds. |
-| `port`, `health`, `health_command`, `health_timeout` | Port and deploy-time checks. HTTP/TCP/systemd health runs first; the optional command then runs as the image user. Timeout defaults to 120 seconds. |
+| `port`, `health`, `health_command`, `health_timeout` | Port and deploy-time checks. HTTP/TCP/systemd health runs first; the optional command then runs as the image user with service environment and secrets. It can be set without `port` or `health`; timeout defaults to 120 seconds. |
 | `volumes` | `name = "/path"` pairs. Services with volumes are stateful and are replaced stop-then-start. |
 | `depends_on` | Services deployed first. Cycles are rejected. |
 | `routes` | Envoy routes; host defaults to `*`, prefix to `/`. |
+| `routes[].tls` | `acme`, `self-signed`, `custom`, or `off`. Defaults to `self-signed` for `*`, wildcard hosts, localhost names, and IP literals; other hosts default to `acme`. ACME requires a public, non-wildcard DNS name. |
+| `routes[].cert`, `routes[].key` | Secret names containing a custom certificate chain PEM and matching private key PEM. Both are required only when `tls = "custom"`; the certificate must be valid for the route host. |
 | `cpu`, `memory` | Incus resource limits. |
+
+## TLS and certificates
+
+Routes use HTTPS by default. A normal DNS hostname defaults to `tls = "acme"` and is issued a Let's Encrypt certificate using HTTP-01 validation on host port 80. Wildcards, `localhost` names, IP addresses, and `*` default to `self-signed`; these routes still redirect HTTP to HTTPS. Set `tls = "off"` to serve that host over HTTP without a redirect. All routes for a host must use the same TLS mode and custom secret names.
+
+For a custom certificate, store the full certificate chain and matching private key as app secrets, then refer to their names:
+
+```toml
+routes = [{ host = "app.example.com", prefix = "/", tls = "custom", cert = "origin-cert", key = "origin-key" }]
+```
+
+Create or update them with `gci secret set`. The certificate and key are validated before activation, and private keys are kept in the root-only host certificate store and the Envoy container's private SDS directory, not in its read-only config mount.
+
+| Cloudflare SSL mode | Suitable origin certificate |
+| --- | --- |
+| Full | Self-signed works because Cloudflare does not validate the origin certificate. |
+| Full (strict) | Use ACME or a custom certificate trusted by Cloudflare, such as a Cloudflare Origin CA certificate. |
+
+Bootstrap defaults to host ports 80 and 443. ACME also requires the hostname to resolve to the host and inbound HTTP traffic to reach port 80. The daily `gci-renew.timer` retries ACME issuance and renews certificates before expiry.
 
 Secret names use lowercase letters, digits, `.`, `_`, and `-`; environment
 variable names follow shell identifier syntax. A key cannot appear in both

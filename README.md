@@ -42,7 +42,9 @@ routes = [{ host = "shop.example.com", prefix = "/" }]
 See [`examples/platform`](examples/platform) and
 [`docs/configuration.md`](docs/configuration.md) for configuration details.
 
-## How deployment works
+Routed hosts use HTTPS by default: public DNS names use Let's Encrypt, while `*`, wildcard, localhost, and IP hosts use self-signed certificates. HTTP redirects to HTTPS unless the route sets `tls = "off"`. Bootstrap publishes HTTPS on port 443 by default; see the [TLS configuration guide](docs/configuration.md#tls-and-certificates) for custom certificates and ACME options.
+
+## How a deploy works
 
 The client uploads changed image sources. The host realizes each referenced
 image's Nix environment and prepares that image once, before changing any
