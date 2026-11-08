@@ -3,7 +3,7 @@ app = "nodeapp"
 [images.web]
 packages = ["nodejs_22"]
 source = "./app"
-snapshot_step = "deps"
+carry_over = "deps"
 steps = [
   { name = "deps", run = "npm install --no-audit --no-fund" },
   { name = "build", run = "npm run build" },
