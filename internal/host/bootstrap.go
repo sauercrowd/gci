@@ -17,6 +17,7 @@ import (
 // envoyListenPort is the port Envoy binds inside its container; the host
 // port (default 80) is forwarded to it by an Incus proxy device.
 const envoyListenPort = 10080
+const nixVersion = "2.35.5"
 
 type BootstrapOptions struct {
 	Subnet      string // gateway CIDR for the gci bridge, e.g. 10.77.0.1/24
@@ -198,7 +199,7 @@ func ensureNix(ctx context.Context, w io.Writer) error {
 		return nil
 	}
 	return runStream(ctx, w, "sh", "-c",
-		"curl -fsSL https://install.determinate.systems/nix | sh -s -- install --no-confirm")
+		fmt.Sprintf("curl -fsSL https://releases.nixos.org/nix/nix-%s/install | sh -s -- --daemon --yes", nixVersion))
 }
 
 // ensureNetwork creates the gci bridge; its dnsmasq forwards *.internal to Envoy.
