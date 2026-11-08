@@ -23,6 +23,7 @@ type Plan struct {
 	Config  *config.Config    `json:"config"`
 	Sources map[string]string `json:"sources"` // image -> source content hash
 	Clean   bool              `json:"clean,omitempty"`
+	Restart []string          `json:"restart,omitempty"`
 }
 
 // basePackages are added to every image env.
@@ -137,6 +138,13 @@ func Apply(ctx context.Context, w io.Writer, plan Plan) error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
+	if err := ValidateRestartNames(cfg, plan.Restart); err != nil {
+		return err
+	}
+	restartSet := make(map[string]bool, len(plan.Restart))
+	for _, name := range plan.Restart {
+		restartSet[name] = true
+	}
 	allStates, err := loadAllStates()
 	if err != nil {
 		return err
@@ -245,7 +253,7 @@ func Apply(ctx context.Context, w io.Writer, plan Plan) error {
 			secretDigest: digests[name],
 			release:      image.release,
 		}
-		did, err := applyService(ctx, w, hc, cfg, name, plan.Sources[imageName], svcPrepared, st)
+		did, err := applyService(ctx, w, hc, cfg, name, plan.Sources[imageName], svcPrepared, st, restartSet)
 		if err != nil {
 			return fmt.Errorf("%s: %w", name, err)
 		}
@@ -305,6 +313,15 @@ func Apply(ctx context.Context, w io.Writer, plan Plan) error {
 	} else {
 		fmt.Fprintf(w, "deployed %s in %s\n", strings.Join(changed, ", "), time.Since(start).Round(time.Second))
 	}
+	var pending []string
+	for _, name := range sortedKeys(st.Services) {
+		if st.Services[name].Pending {
+			pending = append(pending, name)
+		}
+	}
+	if len(pending) != 0 {
+		fmt.Fprintf(w, "pending (restart = \"manual\"): %s — run gci deploy --restart <service>\n", strings.Join(pending, ", "))
+	}
 	return nil
 }
 
@@ -319,6 +336,7 @@ func revisionWithSecrets(cfg *config.Config, name, env, releaseKey, secretsHash 
 func revisionWithRelease(cfg *config.Config, name, env, releaseKey, secretsHash string, releaseCreated time.Time) string {
 	svc := *cfg.Services[name]
 	svc.Routes = nil // routing changes do not require a new container
+	svc.Restart = ""
 	image := *cfg.Images[svc.Image]
 	image.Source = ""
 	raw, _ := json.Marshal(struct {
@@ -334,7 +352,7 @@ func revisionWithRelease(cfg *config.Config, name, env, releaseKey, secretsHash 
 	return hex.EncodeToString(sum[:])[:12]
 }
 
-func applyService(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.Config, name, sourceHash string, prepared preparedService, st *AppState) (bool, error) {
+func applyService(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.Config, name, sourceHash string, prepared preparedService, st *AppState, restartSet map[string]bool) (bool, error) {
 	svc := cfg.Services[name]
 	image := cfg.Images[svc.Image]
 	app := cfg.App
@@ -355,6 +373,12 @@ func applyService(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.
 	rev := revisionWithRelease(cfg, name, env, releaseKey, prepared.secretDigest, releaseCreated)
 	cur := st.Services[name]
 	if cur != nil && cur.Rev == rev {
+		if cur.Pending {
+			cur.Pending = false
+			if err := st.save(); err != nil {
+				return false, err
+			}
+		}
 		inst, _ := getInstance(ctx, cur.Container)
 		if inst != nil && inst.Status == "Running" && unitActiveProbe(ctx, cur.Container, unitName(name))() == nil {
 			vip, err := serviceVIP(cur, svc, st)
@@ -369,6 +393,35 @@ func applyService(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.
 			logf("unchanged (%s)", cur.Container)
 			return false, nil
 		}
+	}
+
+	if shouldHoldRestart(name, svc, cur, rev, restartSet) {
+		routingChanged := false
+		inst, _ := getInstance(ctx, cur.Container)
+		if inst != nil && inst.Status == "Running" && unitActiveProbe(ctx, cur.Container, unitName(name))() == nil {
+			vip, err := serviceVIP(cur, svc, st)
+			if err != nil {
+				return false, err
+			}
+			if !routesEqual(cur.Routes, svc.Routes) || cur.VIP != vip || cur.HTTP != (svc.Health != "") {
+				cur.Routes, cur.VIP, cur.HTTP = svc.Routes, vip, svc.Health != ""
+				routingChanged = true
+			}
+		}
+		cur.Pending = true
+		if routingChanged {
+			logf("routing updated")
+		}
+		logf("changes pending, not restarted (gci deploy --restart %s)", name)
+		if err := st.save(); err != nil {
+			return false, err
+		}
+		if routingChanged {
+			if err := writeEnvoyConfig(ctx); err != nil {
+				return false, err
+			}
+		}
+		return false, nil
 	}
 
 	if svc.Migrate != "" && !svc.Stateful() && (cur == nil || cur.Rev != rev) {
@@ -552,7 +605,7 @@ func applyService(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.
 	}
 	st.Services[name] = &ServiceState{
 		Container: container, IP: ip, Image: svc.Image, VIP: vip, HTTP: svc.Health != "", Rev: rev, Env: env, Release: releaseKey,
-		Port: svc.Port, Routes: svc.Routes, Volumes: svc.Volumes,
+		Port: svc.Port, Routes: svc.Routes, Volumes: svc.Volumes, Pending: false,
 	}
 	if err := st.save(); err != nil {
 		return false, err
@@ -569,6 +622,19 @@ func applyService(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.
 	}
 	logf("ready at %s (%s)", ip, time.Since(t).Round(time.Millisecond))
 	return true, nil
+}
+
+func ValidateRestartNames(cfg *config.Config, names []string) error {
+	for _, name := range names {
+		if _, ok := cfg.Services[name]; !ok {
+			return fmt.Errorf("--restart: unknown service %q", name)
+		}
+	}
+	return nil
+}
+
+func shouldHoldRestart(name string, svc *config.Service, cur *ServiceState, rev string, restartSet map[string]bool) bool {
+	return svc.Restart == "manual" && cur != nil && cur.Rev != rev && !restartSet[name]
 }
 
 func serviceEnvVars(app, name string, svc *config.Service, image *config.Image, env string, secrets map[string]string) map[string]string {

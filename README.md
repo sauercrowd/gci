@@ -66,6 +66,10 @@ volume attached after the old service stops. Envoy switches to a healthy
 replacement before the old stateless container is removed. Secrets are injected
 at runtime and are never part of image builds.
 
+Services with volumes default to `restart = "manual"`: configuration changes
+remain pending until `gci deploy --restart <service>`. This flag applies pending
+changes and does not restart services whose revisions are already unchanged.
+
 Each image keeps its newest three releases plus releases still used by a
 service. Build cache volumes are per image; application volumes and secrets
 persist across deployments.

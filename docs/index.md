@@ -23,7 +23,7 @@ Deploy services to any Linux host over SSH without a container registry.
 
 **Bootstrap** (once per host) installs Incus and Nix, then creates the `gci0` bridge, the `gci` profile, a small Debian 12 base image (`gci-base`), and the Envoy container.
 
-**Deploy** ships only changed sources, realises only missing Nix paths, and replaces only services whose revision changed. Stateless services roll with no downtime, and stateful services are stopped and then restarted on the same volume.
+**Deploy** ships only changed sources, realises only missing Nix paths, and replaces only services whose revision changed. Stateless services roll with no downtime. Services with volumes default to `restart = "manual"` and are stopped and restarted on the same volume only when a restart is requested.
 
 **Service discovery:** services reach each other through Envoy on stable per-service VIPs (`postgres.platform.internal:5432`). External traffic enters through Envoy using each service's `routes`.
 

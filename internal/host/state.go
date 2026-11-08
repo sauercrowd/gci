@@ -34,6 +34,7 @@ type ServiceState struct {
 	Port      int               `json:"port,omitempty"`
 	Routes    []config.Route    `json:"routes,omitempty"`
 	Volumes   map[string]string `json:"volumes,omitempty"`
+	Pending   bool              `json:"pending,omitempty"`
 }
 
 type Release struct {

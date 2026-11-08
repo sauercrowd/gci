@@ -32,6 +32,9 @@ func Status(ctx context.Context, w io.Writer, app string) error {
 				unit = strings.TrimSpace(out)
 			}
 		}
+		if s.Pending {
+			state += " (pending)"
+		}
 		addr := "-"
 		if s.Port != 0 {
 			addr = fmt.Sprintf("%s:%d", internalName(app, name), s.Port)
