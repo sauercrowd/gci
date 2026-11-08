@@ -85,6 +85,7 @@ func TestValidate(t *testing.T) {
 		"step run is required":             `app = "a"` + "\n[images.a]\nsteps = [{ name = \"deps\", run = \"  \" }]\n[services.a]\nimage = \"a\"\ncommand = \"x\"",
 		"carry_over":                       `app = "a"` + "\n[images.a]\ncarry_over = \"missing\"\nsteps = [{ name = \"deps\", run = \"true\" }]\n[services.a]\nimage = \"a\"\ncommand = \"x\"",
 		"image \"a\": environment":         `app = "a"` + "\n[images.a]\nenv = { \"bad-env\" = \"value\" }\n[services.a]\nimage = \"a\"\ncommand = \"x\"",
+		"migrate must not be blank":        `app = "a"` + "\n[images.a]\n[services.a]\nimage = \"a\"\ncommand = \"x\"\nmigrate = \"   \"",
 		"health_command must not be blank": `app = "a"` + "\n[images.a]\n[services.a]\nimage = \"a\"\ncommand = \"x\"\nhealth_command = \"   \"",
 		"strict mode":                      `app = "a"` + "\n[images.a]\nunknown = \"value\"\n[services.a]\nimage = \"a\"\ncommand = \"x\"",
 		"missing in the target struct":     `app = "a"` + "\n[images.a]\nsteps = [{ run = \"true\", unknown = \"value\" }]\n[services.a]\nimage = \"a\"\ncommand = \"x\"",
@@ -145,6 +146,38 @@ command = "worker"
 	}
 	if got := cfg.ReferencedImages(); !reflect.DeepEqual(got, []string{"web"}) {
 		t.Fatalf("referenced images = %v, want [web]", got)
+	}
+}
+
+func TestMigrateWithVolumesIsAllowed(t *testing.T) {
+	cfg, err := Load(write(t, `
+app = "demo"
+[images.app]
+[services.db]
+image = "app"
+command = "postgres"
+migrate = "migrate"
+volumes = { data = "/var/lib/data" }
+`))
+	if err != nil {
+		t.Fatalf("migrate with volumes: %v", err)
+	}
+	if !cfg.Services["db"].Stateful() {
+		t.Fatal("service with volumes is not stateful")
+	}
+}
+
+func TestMigrateCommandMustNotBeBlank(t *testing.T) {
+	_, err := Load(write(t, `
+app = "demo"
+[images.app]
+[services.web]
+image = "app"
+command = "server"
+migrate = "   "
+`))
+	if err == nil || !strings.Contains(err.Error(), "migrate must not be blank") {
+		t.Fatalf("blank migrate error = %v", err)
 	}
 }
 

@@ -354,6 +354,14 @@ func applyService(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.
 		}
 	}
 
+	if svc.Migrate != "" && !svc.Stateful() && (cur == nil || cur.Rev != rev) {
+		logf("migrating")
+		if err := runMigration(ctx, w, hc, cfg, name, env, prepared, rev); err != nil {
+			logf("migration failed: %v", err)
+			return false, err
+		}
+	}
+
 	container := fmt.Sprintf("gci-%s-%s-%s", app, name, rev[:8])
 	if cur != nil && cur.Container == container {
 		_ = deleteInstance(ctx, container)
@@ -477,6 +485,13 @@ func applyService(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.
 	}
 	for _, vol := range vols {
 		if _, err := incus(ctx, "exec", container, "--", "/bin/chown", image.User+":", svc.Volumes[vol]); err != nil {
+			return fail(err)
+		}
+	}
+	if svc.Stateful() && svc.Migrate != "" && (cur == nil || cur.Rev != rev) {
+		logf("migrating")
+		if err := execMigration(ctx, w, container, name, svc, image, rev, prepared.secrets); err != nil {
+			logf("migration failed: %v", err)
 			return fail(err)
 		}
 	}

@@ -45,6 +45,7 @@ type Step struct {
 
 type Service struct {
 	Image         string            `toml:"image" json:"image"`
+	Migrate       string            `toml:"migrate,omitempty" json:"migrate,omitempty"`
 	Command       string            `toml:"command" json:"command"`
 	Setup         string            `toml:"setup,omitempty" json:"setup,omitempty"`
 	Env           map[string]string `toml:"env,omitempty" json:"env,omitempty"`
@@ -184,6 +185,9 @@ func (c *Config) Validate() error {
 			if _, ok := c.Services[dep]; !ok {
 				return fmt.Errorf("service %q depends on unknown service %q", name, dep)
 			}
+		}
+		if strings.TrimSpace(svc.Migrate) == "" && svc.Migrate != "" {
+			return fmt.Errorf("service %q: migrate must not be blank", name)
 		}
 		for env := range svc.Env {
 			if !envNameRe.MatchString(env) {
