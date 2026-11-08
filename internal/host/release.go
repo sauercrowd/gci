@@ -233,7 +233,7 @@ func buildRelease(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.
 		return err
 	}
 	cacheName := cacheVolumeName(cfg.App, imageName)
-	if err := ensureCacheVolume(ctx, hc, cacheName); err != nil {
+	if err := ensureCacheVolume(ctx, hc, cacheName, cfg.App, imageName); err != nil {
 		return fail(err)
 	}
 	if _, err := incus(ctx, "config", "device", "add", builder, "cache", "disk",
@@ -376,12 +376,19 @@ func buildCommandArgs(container, uid, gid string, vars map[string]string, comman
 	return append(args, "--", "sh", "-e", "-c", command)
 }
 
-func ensureCacheVolume(ctx context.Context, hc *HostConfig, name string) error {
-	if exists(ctx, "storage", "volume", "show", hc.StoragePool, name) {
-		return nil
+func ensureCacheVolume(ctx context.Context, hc *HostConfig, name, app, image string) error {
+	if !exists(ctx, "storage", "volume", "show", hc.StoragePool, name) {
+		if _, err := incus(ctx, "storage", "volume", "create", hc.StoragePool, name); err != nil {
+			return err
+		}
 	}
-	_, err := incus(ctx, "storage", "volume", "create", hc.StoragePool, name)
-	return err
+	if err := claimVolume(ctx, hc.StoragePool, name, app); err != nil {
+		return err
+	}
+	if err := setVolumeConfig(ctx, hc.StoragePool, name, "user.gci.role", "cache"); err != nil {
+		return err
+	}
+	return setVolumeConfig(ctx, hc.StoragePool, name, "user.gci.image", image)
 }
 
 func cacheVolumeName(app, image string) string { return "gcicache-" + app + "-" + image }
