@@ -72,6 +72,23 @@ func TestRevisionIgnoresRoutes(t *testing.T) {
 	}
 }
 
+func TestRevisionIgnoresImageSourcePath(t *testing.T) {
+	newConfig := func(source string) *config.Config {
+		return &config.Config{
+			App:    "a",
+			Images: map[string]*config.Image{"app": {User: "gci", Source: source}},
+			Services: map[string]*config.Service{
+				"web": {Image: "app", Command: "x"},
+			},
+		}
+	}
+	r1 := revision(newConfig("/checkout/one"), "web", "/nix/store/env", "source-hash")
+	r2 := revision(newConfig("/checkout/two"), "web", "/nix/store/env", "source-hash")
+	if r1 != r2 {
+		t.Fatalf("image source path changed revision: %q != %q", r1, r2)
+	}
+}
+
 func TestPruneReleases(t *testing.T) {
 	now := time.Now()
 	rels := []*Release{
