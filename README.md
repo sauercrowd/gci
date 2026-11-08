@@ -25,7 +25,7 @@ app = "shop"
 [images.web]
 packages = ["nodejs_22"]
 source = "."
-snapshot_step = "deps"
+carry_over = "deps"
 steps = [
   { name = "deps", run = "npm install --no-audit --no-fund" },
   { name = "build", run = "npm run build" },
@@ -50,11 +50,13 @@ services. Every service sharing an image receives its own copy-on-write
 container. Build steps run in order as the image user, with image environment
 variables; service environment overrides them at runtime.
 
-Images without `snapshot_step` start from a fresh base on every build. A named
-snapshot lets later builds start from the saved state after that step, but all
-steps rerun. A snapshot on the final step carries generated output forward and
-may leave stale artifacts. Use an earlier dependency step when outputs should
-be recreated. `gci deploy --clean` or `GCI_CLEAN=1` forces a fresh base.
+Every build runs all steps. With `carry_over`, the files present after that step
+in the previous build are still there, so idempotent steps like `npm install` or
+`go mod download` finish quickly. Steps must therefore be idempotent. Without
+`carry_over`, each build starts from a fresh base. Setting it on the final step
+carries generated output forward and may leave stale artifacts; use an earlier
+dependency step when outputs should be recreated. `gci deploy --clean` or
+`GCI_CLEAN=1` forces a fresh base.
 
 Services can use `migrate` before activation. Stateless migrations run in a
 temporary copy while the old version serves; stateful migrations run with the

@@ -10,7 +10,7 @@ app = "shop"
 packages = ["nodejs_22"]
 source = "."
 env = { NODE_ENV = "production" }
-snapshot_step = "deps"
+carry_over = "deps"
 steps = [
   { name = "deps", run = "npm install --no-audit --no-fund" },
   { name = "build", run = "npm run build" },
@@ -34,7 +34,7 @@ routes = [{ host = "shop.example.com", prefix = "/" }]
 | `source` | Optional local directory, relative to `gci.toml`, uploaded to `/app`. `.git`, `node_modules`, and `__pycache__` are skipped. |
 | `env` | Environment inherited by build steps and services using the image. Service `env` overrides it. |
 | `steps` | Ordered `{ name?, run }` commands executed in `/app` (created empty when no source is configured). Names are optional and unique per image. |
-| `snapshot_step` | Optional step name that marks the reusable build boundary. Omitted means every build starts from a fresh base. |
+| `carry_over` | Optional step name. Omitted means every build starts from a fresh base. |
 
 Images not referenced by a service are valid but are not built. Several services
 can share an image: gci prepares it once, then gives each service its own
@@ -66,11 +66,14 @@ otherwise they run in the image user's home directory.
 
 ## Build snapshots
 
-All steps run on every deploy, in order. With `snapshot_step = "deps"`, gci can
-start from the newest release of the same image whose build chain matches and
-has the `deps` snapshot. Steps after that boundary do not affect the chain key;
-changes to packages, user, image environment, or steps through the boundary
-start from a fresh base. Without `snapshot_step`, builds always start fresh.
+Every build runs all steps. With `carry_over`, the files present after that step
+in the previous build are still there, so idempotent steps like `npm install` or
+`go mod download` finish quickly. Steps must therefore be idempotent. With
+`carry_over = "deps"`, gci can start from the newest release of the same image
+whose build chain matches and has the `deps` snapshot. Steps after that boundary
+do not affect the chain key; changes to packages, user, image environment, or
+steps through the boundary start from a fresh base. Without `carry_over`, builds
+always start fresh.
 
 The snapshot is taken immediately after the named step, with the build cache
 device detached. A snapshot on the final step instead starts from the previous
