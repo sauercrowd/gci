@@ -20,6 +20,13 @@ type AppState struct {
 	App      string                   `json:"app"`
 	Services map[string]*ServiceState `json:"services"`
 	Releases map[string][]*Release    `json:"releases,omitempty"`
+	Jobs     map[string]*JobState     `json:"jobs,omitempty"`
+}
+
+type JobState struct {
+	Rev   string    `json:"rev"`
+	Image string    `json:"image"`
+	Ran   time.Time `json:"ran"`
 }
 
 type ServiceState struct {
@@ -130,7 +137,7 @@ func sourceDir(app, image, hash string) string {
 }
 
 func loadState(app string) (*AppState, error) {
-	st := &AppState{App: app, Services: map[string]*ServiceState{}}
+	st := &AppState{App: app, Services: map[string]*ServiceState{}, Jobs: map[string]*JobState{}}
 	raw, err := os.ReadFile(statePath(app))
 	if errors.Is(err, os.ErrNotExist) {
 		return st, nil
@@ -143,6 +150,9 @@ func loadState(app string) (*AppState, error) {
 	}
 	if st.Services == nil {
 		st.Services = map[string]*ServiceState{}
+	}
+	if st.Jobs == nil {
+		st.Jobs = map[string]*JobState{}
 	}
 	return st, nil
 }

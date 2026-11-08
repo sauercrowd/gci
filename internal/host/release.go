@@ -138,6 +138,10 @@ func builderName(app, image, key string) string {
 
 func prepareRelease(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.Config, imageName, env, baseFP, sourceHash string, st *AppState, clean bool) (*Release, error) {
 	image := cfg.Images[imageName]
+	cacheName := cacheVolumeName(cfg.App, imageName)
+	if err := ensureCacheVolume(ctx, hc, cacheName, cfg.App, imageName); err != nil {
+		return nil, err
+	}
 	srcDir := ""
 	if image.Source != "" {
 		srcDir = sourceDir(cfg.App, imageName, sourceHash)
@@ -233,9 +237,6 @@ func buildRelease(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.
 		return err
 	}
 	cacheName := cacheVolumeName(cfg.App, imageName)
-	if err := ensureCacheVolume(ctx, hc, cacheName, cfg.App, imageName); err != nil {
-		return fail(err)
-	}
 	if _, err := incus(ctx, "config", "device", "add", builder, "cache", "disk",
 		"pool="+hc.StoragePool, "source="+cacheName, "path=/var/cache/gci"); err != nil {
 		return fail(err)
@@ -323,18 +324,8 @@ func builderIDs(ctx context.Context, builder, user string) (string, string, erro
 	return strings.TrimSpace(uid), strings.TrimSpace(gid), nil
 }
 
-func baseBuildEnv(env, app, image, user string) map[string]string {
-	home := "/home/" + user
-	if user == "root" {
-		home = "/root"
-	}
+func cacheEnv() map[string]string {
 	return map[string]string{
-		"PATH":                 env + "/bin:/usr/bin:/bin",
-		"HOME":                 home,
-		"SSL_CERT_FILE":        env + "/etc/ssl/certs/ca-bundle.crt",
-		"NIX_SSL_CERT_FILE":    env + "/etc/ssl/certs/ca-bundle.crt",
-		"GCI_APP":              app,
-		"GCI_IMAGE":            image,
 		"XDG_CACHE_HOME":       "/var/cache/gci",
 		"npm_config_cache":     "/var/cache/gci/npm",
 		"npm_config_store_dir": "/var/cache/gci/pnpm",
@@ -343,6 +334,25 @@ func baseBuildEnv(env, app, image, user string) map[string]string {
 		"UV_LINK_MODE":         "copy",
 		"PIP_CACHE_DIR":        "/var/cache/gci/pip",
 	}
+}
+
+func baseBuildEnv(env, app, image, user string) map[string]string {
+	home := "/home/" + user
+	if user == "root" {
+		home = "/root"
+	}
+	vars := map[string]string{
+		"PATH":              env + "/bin:/usr/bin:/bin",
+		"HOME":              home,
+		"SSL_CERT_FILE":     env + "/etc/ssl/certs/ca-bundle.crt",
+		"NIX_SSL_CERT_FILE": env + "/etc/ssl/certs/ca-bundle.crt",
+		"GCI_APP":           app,
+		"GCI_IMAGE":         image,
+	}
+	for key, value := range cacheEnv() {
+		vars[key] = value
+	}
+	return vars
 }
 
 func imageBuildEnv(env, app, imageName string, image *config.Image) map[string]string {

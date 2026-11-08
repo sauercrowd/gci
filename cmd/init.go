@@ -35,7 +35,12 @@ health = "/healthz"        # HTTP check before Envoy switches traffic
 routes = [{ host = "%[1]s.localhost", prefix = "/" }]
 # env = { NODE_ENV = "production" }
 # secrets = { SESSION_SECRET = "session-secret" }  # gci secret set session-secret
-# migrate = "npm run db:migrate" # stateless: temp copy; volumes: before start
+
+# [jobs.migrate]
+# image = "web"
+# run = "npm run db:migrate"
+# depends_on = ["db"]
+# Add "migrate" to [services.web].depends_on to run it during deployment.
 `
 
 var nonNameChars = regexp.MustCompile(`[^a-z0-9-]+`)

@@ -36,9 +36,10 @@ routes = [{ host = "shop.example.com", prefix = "/" }]
 | `steps` | Ordered `{ name?, run }` commands executed in `/app` (created empty when no source is configured). Names are optional and unique per image. |
 | `carry_over` | Optional step name. Omitted means every build starts from a fresh base. |
 
-Images not referenced by a service are valid but are not built. Several services
-can share an image: gci prepares it once, then gives each service its own
-copy-on-write container.
+Images not referenced by a service or deploy job are valid but are not built
+during deployment; a non-deploy job prepares its image when run. Several
+services can share an image: gci prepares it once, then gives each service its
+own copy-on-write container.
 
 ## Services
 
@@ -48,16 +49,51 @@ copy-on-write container.
 | `command` | **Required.** Main process, run as the image user under systemd. |
 | `restart` | `auto` or `manual`. Defaults to `manual` for services with volumes and `auto` otherwise. Manual services keep their running container when their revision changes; use `gci deploy --restart <service>` to apply pending changes. This does not restart an unchanged service. |
 | `setup` | Shell script run before every start. |
-| `migrate` | Optional command run as the image user for changed services. Stateless services migrate in a temporary copy while the old version serves; services with volumes migrate after the old container stops, with volumes attached, before the new one starts. Migrations have a 10-minute timeout and should be idempotent and backwards-compatible. |
 | `env` | Runtime environment; overrides image environment. |
 | `secrets` | `ENV_VAR = "secret-name"` mappings injected only at activation, never into image builds. |
 | `port`, `health`, `health_command`, `health_timeout` | Port and deploy-time checks. HTTP/TCP/systemd health runs first; the optional command then runs as the image user with service environment and secrets. It can be set without `port` or `health`; timeout defaults to 120 seconds. |
 | `volumes` | `name = "/path"` pairs. Services with volumes are stateful and default to `restart = "manual"`; when restarted, they are stopped then started on the same volume. |
-| `depends_on` | Services deployed first. Cycles are rejected. |
+| `depends_on` | Services or jobs deployed/run first. Cycles are rejected. |
 | `routes` | Envoy routes; host defaults to `*`, prefix to `/`. |
 | `routes[].tls` | `acme`, `self-signed`, `custom`, or `off`. Defaults to `self-signed` for `*`, wildcard hosts, localhost names, and IP literals; other hosts default to `acme`. ACME requires a public, non-wildcard DNS name. |
 | `routes[].cert`, `routes[].key` | Secret names containing a custom certificate chain PEM and matching private key PEM. Both are required only when `tls = "custom"`; the certificate must be valid for the route host. |
 | `cpu`, `memory` | Incus resource limits. |
+
+## Jobs
+
+Jobs are one-shot commands that run in an isolated Incus container from their
+image's prepared release (or the base image when no release is needed).
+Build steps and jobs share the image's persistent cache at `/var/cache/gci`;
+services do not receive this volume or its cache environment variables.
+
+| Key | Description |
+| --- | --- |
+| `image` | **Required.** Name of an existing image. |
+| `run` | **Required.** Shell command to execute as the image user. |
+| `env` | Job-specific environment, applied after image environment. |
+| `secrets` | Explicit `ENV_VAR = "secret-name"` mappings. Service secrets are never inherited. |
+| `volumes` | Optional mounts from one owning service; see volume jobs below. |
+| `depends_on` | Services or jobs that must run first. |
+| `cpu`, `memory` | Incus resource limits. |
+| `timeout` | Maximum runtime in seconds; defaults to 600. |
+
+A job becomes a deploy job when any service depends on it, directly or through
+other services or jobs. Deploy jobs run in dependency order when their
+configuration, image release, environment, or secrets change; unchanged jobs
+are skipped. Other jobs run only when requested with `gci run <job>`, which
+does not run dependencies. A failed deploy job aborts the deployment without
+recording success, so it runs again on the next deploy. `gci run` streams output
+and returns the job's exit status.
+
+Jobs must be idempotent and backwards-compatible with the old service version,
+because a successful deploy job can run before a later service health check
+fails. Secrets are explicit per job and are never inherited from the service.
+
+A volume job may use volumes owned by exactly one service. That service must
+depend on the job, and no other service or job may depend on it. The job runs
+during the owning service's rollout after the old container stops and before
+the replacement starts. A manual-restart service and its changed volume jobs
+remain pending until `gci deploy --restart <service>`.
 
 ## TLS and certificates
 
@@ -82,9 +118,9 @@ Secret names use lowercase letters, digits, `.`, `_`, and `-`; environment
 variable names follow shell identifier syntax. A key cannot appear in both
 `env` and `secrets`.
 
-Build steps always run in `/app`, which is created empty when the image has no
-source. Health and migration commands run in `/app` when the image has source;
-otherwise they run in the image user's home directory.
+Build steps and jobs always run in `/app`, which is created empty when the
+image has no source. Health commands also run in `/app` when the image has
+source; otherwise they run in the image user's home directory.
 
 ## Build snapshots
 
@@ -116,10 +152,13 @@ dependencies.
 
 ## Storage and service discovery
 
-Build steps share a persistent per-image `gcicache-<app>-<image>` volume mounted
-at `/var/cache/gci`. `gci rm --volumes` removes application volumes and caches.
+Build steps and jobs share a persistent `gcicache-<app>-<image>` volume mounted
+at `/var/cache/gci`, with one volume per app and image. Services do not receive
+the cache volume or its environment variables. Override a cache variable such as
+`XDG_CACHE_HOME` in image or job `env` to use another path. Only
+`gci rm --volumes` removes application volumes and caches.
 Host secrets remain under `/var/lib/gci/secrets/<app>` until explicitly removed.
 
 Services with ports receive stable VIPs and `<service>.<app>.internal` names.
-Envoy routes external traffic to the current container. A failed build,
-migration, missing secret, or health check does not promote a replacement.
+Envoy routes external traffic to the current container. A failed build, job,
+missing secret, or health check does not promote a replacement.

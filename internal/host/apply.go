@@ -156,6 +156,14 @@ func Apply(ctx context.Context, w io.Writer, plan Plan) error {
 	if err != nil {
 		return err
 	}
+	if st.Jobs == nil {
+		st.Jobs = map[string]*JobState{}
+	}
+	for name := range st.Jobs {
+		if _, ok := cfg.Jobs[name]; !ok {
+			delete(st.Jobs, name)
+		}
+	}
 	if st.Releases == nil {
 		st.Releases = map[string][]*Release{}
 	}
@@ -168,7 +176,7 @@ func Apply(ctx context.Context, w io.Writer, plan Plan) error {
 	if err != nil {
 		return err
 	}
-	imageNames := cfg.ReferencedImages()
+	imageNames := cfg.DeployImages()
 	for _, imageName := range imageNames {
 		image := cfg.Images[imageName]
 		if image.Source != "" && (plan.Sources[imageName] == "" || !HasSource(cfg.App, imageName, plan.Sources[imageName])) {
@@ -178,10 +186,17 @@ func Apply(ctx context.Context, w io.Writer, plan Plan) error {
 
 	resolved := make(map[string]map[string]string, len(order))
 	digests := make(map[string]string, len(order))
+	deployJobs := stringSet(cfg.DeployJobs())
 	var missing []string
 	for _, name := range order {
-		svc := cfg.Services[name]
-		values, err := resolveSecrets(cfg.App, svc)
+		var values map[string]string
+		if svc := cfg.Services[name]; svc != nil {
+			values, err = resolveSecrets(cfg.App, svc)
+		} else if deployJobs[name] {
+			values, err = resolveJobSecrets(cfg.App, cfg.Jobs[name])
+		} else {
+			continue
+		}
 		if err != nil {
 			if strings.HasPrefix(err.Error(), "missing secrets:") {
 				missing = append(missing, name+": "+strings.TrimPrefix(err.Error(), "missing secrets: "))
@@ -239,29 +254,73 @@ func Apply(ctx context.Context, w io.Writer, plan Plan) error {
 		}
 		prepared[imageName] = item
 	}
+	preparedJobs := make(map[string]preparedJob, len(deployJobs))
+	for _, name := range order {
+		job := cfg.Jobs[name]
+		if job == nil || !deployJobs[name] {
+			continue
+		}
+		image := prepared[job.Image]
+		releaseKey := ""
+		var releaseCreated time.Time
+		if image.release != nil {
+			releaseKey = image.release.Key
+			releaseCreated = image.release.Created
+		}
+		preparedJobs[name] = preparedJob{
+			name: name, job: job, image: image, secrets: resolved[name], secretDigest: digests[name],
+			rev:  jobRevisionWithRelease(cfg, name, image.env, releaseKey, releaseCreated, digests[name]),
+			user: cfg.Images[job.Image].User, hasSource: cfg.Images[job.Image].Source != "",
+		}
+	}
 
 	var changed []string
 	if err := writeEnvoyConfig(ctx); err != nil {
 		return err
 	}
 	for _, name := range order {
-		imageName := cfg.Services[name].Image
-		image := prepared[imageName]
-		svcPrepared := preparedService{
-			env:          image.env,
-			secrets:      resolved[name],
-			secretDigest: digests[name],
-			release:      image.release,
-		}
-		did, err := applyService(ctx, w, hc, cfg, name, plan.Sources[imageName], svcPrepared, st, restartSet)
-		if err != nil {
-			return fmt.Errorf("%s: %w", name, err)
-		}
-		if did {
-			changed = append(changed, name)
-			if err := writeEnvoyConfig(ctx); err != nil {
-				return err
+		if svc := cfg.Services[name]; svc != nil {
+			image := prepared[svc.Image]
+			svcPrepared := preparedService{
+				env:          image.env,
+				secrets:      resolved[name],
+				secretDigest: digests[name],
+				release:      image.release,
 			}
+			var volumeJobs []preparedJob
+			for _, jobName := range order {
+				job := preparedJobs[jobName]
+				if job.job != nil && len(job.job.Volumes) > 0 && jobVolumeOwner(cfg, job.job) == name {
+					volumeJobs = append(volumeJobs, job)
+				}
+			}
+			did, err := applyService(ctx, w, hc, cfg, name, plan.Sources[svc.Image], svcPrepared, st, restartSet, volumeJobs)
+			if err != nil {
+				return fmt.Errorf("%s: %w", name, err)
+			}
+			if did {
+				changed = append(changed, name)
+				if err := writeEnvoyConfig(ctx); err != nil {
+					return err
+				}
+			}
+			continue
+		}
+		job := preparedJobs[name]
+		if job.job == nil || len(job.job.Volumes) > 0 {
+			continue
+		}
+		if current := st.Jobs[name]; current != nil && current.Rev == job.rev {
+			fmt.Fprintf(w, "==> %s: unchanged\n", name)
+			continue
+		}
+		fmt.Fprintf(w, "==> %s: running\n", name)
+		if err := runJob(ctx, w, hc, cfg, job); err != nil {
+			return fmt.Errorf("%s: %v", name, err)
+		}
+		st.Jobs[name] = &JobState{Rev: job.rev, Image: job.job.Image, Ran: time.Now().UTC()}
+		if err := st.save(); err != nil {
+			return err
 		}
 	}
 
@@ -275,8 +334,8 @@ func Apply(ctx context.Context, w io.Writer, plan Plan) error {
 		_ = os.Remove(profileLink(cfg.App, name, ".prev"))
 		delete(st.Services, name)
 	}
-	referenced := make(map[string]bool, len(imageNames))
-	for _, imageName := range imageNames {
+	referenced := make(map[string]bool, len(cfg.ReferencedImages()))
+	for _, imageName := range cfg.ReferencedImages() {
 		referenced[imageName] = true
 	}
 	for imageName := range st.Releases {
@@ -334,6 +393,10 @@ func revisionWithSecrets(cfg *config.Config, name, env, releaseKey, secretsHash 
 }
 
 func revisionWithRelease(cfg *config.Config, name, env, releaseKey, secretsHash string, releaseCreated time.Time) string {
+	return revisionWithVolumeJobs(cfg, name, env, releaseKey, secretsHash, releaseCreated, nil)
+}
+
+func revisionWithVolumeJobs(cfg *config.Config, name, env, releaseKey, secretsHash string, releaseCreated time.Time, jobs map[string]string) string {
 	svc := *cfg.Services[name]
 	svc.Routes = nil // routing changes do not require a new container
 	svc.Restart = ""
@@ -347,12 +410,13 @@ func revisionWithRelease(cfg *config.Config, name, env, releaseKey, secretsHash 
 		ReleaseCreated time.Time
 		Secrets        string
 		Net            string
-	}{svc, image, env, releaseKey, releaseCreated, secretsHash, "release"})
+		Jobs           map[string]string `json:",omitempty"`
+	}{svc, image, env, releaseKey, releaseCreated, secretsHash, "release", jobs})
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:])[:12]
 }
 
-func applyService(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.Config, name, sourceHash string, prepared preparedService, st *AppState, restartSet map[string]bool) (bool, error) {
+func applyService(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.Config, name, sourceHash string, prepared preparedService, st *AppState, restartSet map[string]bool, volumeJobs []preparedJob) (bool, error) {
 	svc := cfg.Services[name]
 	image := cfg.Images[svc.Image]
 	app := cfg.App
@@ -370,7 +434,14 @@ func applyService(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.
 		releaseKey = prepared.release.Key
 		releaseCreated = prepared.release.Created
 	}
-	rev := revisionWithRelease(cfg, name, env, releaseKey, prepared.secretDigest, releaseCreated)
+	jobRevisions := map[string]string{}
+	for _, job := range volumeJobs {
+		jobRevisions[job.name] = job.rev
+	}
+	if len(jobRevisions) == 0 {
+		jobRevisions = nil
+	}
+	rev := revisionWithVolumeJobs(cfg, name, env, releaseKey, prepared.secretDigest, releaseCreated, jobRevisions)
 	cur := st.Services[name]
 	if cur != nil && cur.Rev == rev {
 		if cur.Pending {
@@ -422,14 +493,6 @@ func applyService(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.
 			}
 		}
 		return false, nil
-	}
-
-	if svc.Migrate != "" && !svc.Stateful() && (cur == nil || cur.Rev != rev) {
-		logf("migrating")
-		if err := runMigration(ctx, w, hc, cfg, name, env, prepared, rev); err != nil {
-			logf("migration failed: %v", err)
-			return false, err
-		}
 	}
 
 	container := fmt.Sprintf("gci-%s-%s-%s", app, name, rev[:8])
@@ -495,6 +558,21 @@ func applyService(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.
 			}
 		}
 	}
+	for _, job := range volumeJobs {
+		if current := st.Jobs[job.name]; current != nil && current.Rev == job.rev {
+			fmt.Fprintf(w, "==> %s: unchanged\n", job.name)
+			continue
+		}
+		fmt.Fprintf(w, "==> %s: running\n", job.name)
+		if err := runJob(ctx, w, hc, cfg, job); err != nil {
+			logf("job %s failed: %v", job.name, err)
+			return fail(fmt.Errorf("%s: %v", job.name, err))
+		}
+		st.Jobs[job.name] = &JobState{Rev: job.rev, Image: job.job.Image, Ran: time.Now().UTC()}
+		if err := st.save(); err != nil {
+			return fail(err)
+		}
+	}
 	for _, vol := range vols {
 		if _, err := incus(ctx, "config", "device", "add", container, "vol-"+vol, "disk",
 			"pool="+volPools[vol], "source="+volumeName(app, vol), "path="+svc.Volumes[vol]); err != nil {
@@ -555,13 +633,6 @@ func applyService(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.
 	}
 	for _, vol := range vols {
 		if _, err := incus(ctx, "exec", container, "--", "/bin/chown", image.User+":", svc.Volumes[vol]); err != nil {
-			return fail(err)
-		}
-	}
-	if svc.Stateful() && svc.Migrate != "" && (cur == nil || cur.Rev != rev) {
-		logf("migrating")
-		if err := execMigration(ctx, w, container, name, svc, image, rev, prepared.secrets); err != nil {
-			logf("migration failed: %v", err)
 			return fail(err)
 		}
 	}
@@ -687,6 +758,19 @@ func deleteOrphans(ctx context.Context, st *AppState) error {
 		}
 	}
 	for _, inst := range list {
+		if inst.Config["user.gci.role"] == "job" {
+			held, err := jobLeaseHeld(inst.Name)
+			if err != nil {
+				return fmt.Errorf("check job lease %s: %w", inst.Name, err)
+			}
+			if shouldDeleteJobOrphan(inst, st.App, held) {
+				if err := deleteInstance(ctx, inst.Name); err != nil {
+					return fmt.Errorf("delete stale job %s: %w", inst.Name, err)
+				}
+				_ = os.Remove(filepath.Join(stateRoot, "jobs", inst.Name+".lock"))
+			}
+			continue
+		}
 		if shouldDeleteOrphan(inst, st.App, keep) {
 			if err := deleteInstance(ctx, inst.Name); err != nil {
 				return fmt.Errorf("delete orphan %s: %w", inst.Name, err)
@@ -694,6 +778,10 @@ func deleteOrphans(ctx context.Context, st *AppState) error {
 		}
 	}
 	return nil
+}
+
+func shouldDeleteJobOrphan(inst instance, app string, leaseHeld bool) bool {
+	return inst.Config["user.gci.app"] == app && inst.Config["user.gci.role"] == "job" && !leaseHeld
 }
 
 func shouldDeleteOrphan(inst instance, app string, keep map[string]bool) bool {

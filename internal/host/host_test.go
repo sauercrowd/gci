@@ -281,6 +281,34 @@ func TestRevisionIgnoresRestartPolicy(t *testing.T) {
 	}
 }
 
+func TestJobRevisionKindAndVolumeJobRevisions(t *testing.T) {
+	cfg := &config.Config{
+		App:    "a",
+		Images: map[string]*config.Image{"app": {User: "gci"}},
+		Services: map[string]*config.Service{
+			"db": {Image: "app", Command: "db", Volumes: map[string]string{"data": "/data"}},
+		},
+		Jobs: map[string]*config.Job{
+			"migrate": {Image: "app", Run: "write", Volumes: map[string]string{"data": "/data"}},
+		},
+	}
+	serviceRev := revisionWithRelease(cfg, "db", "/nix/store/env", "release", "", time.Time{})
+	if got := revisionWithVolumeJobs(cfg, "db", "/nix/store/env", "release", "", time.Time{}, nil); got != serviceRev {
+		t.Fatal("service revision changed with no volume-job revisions")
+	}
+	jobRev := jobRevisionWithRelease(cfg, "migrate", "/nix/store/env", "release", time.Time{}, "")
+	if jobRev == serviceRev {
+		t.Fatal("job revision matches service revision")
+	}
+	withJob := revisionWithVolumeJobs(cfg, "db", "/nix/store/env", "release", "", time.Time{}, map[string]string{"migrate": jobRev})
+	cfg.Jobs["migrate"].Run = "write again"
+	changedJobRev := jobRevisionWithRelease(cfg, "migrate", "/nix/store/env", "release", time.Time{}, "")
+	changed := revisionWithVolumeJobs(cfg, "db", "/nix/store/env", "release", "", time.Time{}, map[string]string{"migrate": changedJobRev})
+	if withJob == changed {
+		t.Fatal("changing a volume job did not change its service revision")
+	}
+}
+
 func TestSecretRevisionScope(t *testing.T) {
 	useTestSecretRoot(t)
 	cfg := &config.Config{

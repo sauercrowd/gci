@@ -24,6 +24,15 @@ const AgentPath = "/usr/local/bin/gci"
 // ErrAgent marks failures the agent already reported on stderr.
 var ErrAgent = errors.New("agent failed")
 
+type AgentExitError struct {
+	Code int
+}
+
+func (e *AgentExitError) Error() string { return ErrAgent.Error() }
+func (e *AgentExitError) Is(target error) bool {
+	return target == ErrAgent
+}
+
 type Host struct {
 	run  func(ctx context.Context, command string, stdin io.Reader, stdout, stderr io.Writer) error
 	root bool
@@ -107,11 +116,42 @@ func (h *Host) Agent(ctx context.Context, args []string, stdin io.Reader, stdout
 	for i, a := range args {
 		quoted[i] = shellQuote(a)
 	}
+	if len(args) > 0 && args[0] == "run-job" {
+		agentInput := stdin
+		reader, writer := io.Pipe()
+		done := make(chan struct{})
+		go func(input io.Reader) {
+			if input != nil {
+				if _, err := io.Copy(writer, input); err != nil {
+					_ = writer.CloseWithError(err)
+					return
+				}
+			}
+			if _, err := writer.Write([]byte{'\n'}); err != nil {
+				_ = writer.CloseWithError(err)
+				return
+			}
+			select {
+			case <-ctx.Done():
+				_ = writer.CloseWithError(ctx.Err())
+			case <-done:
+				_ = writer.Close()
+			}
+		}(agentInput)
+		defer func() {
+			close(done)
+			_ = reader.Close()
+		}()
+		stdin = reader
+	}
 	err := h.run(ctx, h.sudo(AgentPath+" agent "+strings.Join(quoted, " ")), stdin, stdout, stderr)
 	var exitErr *exec.ExitError
 	var sshExit *cryptossh.ExitError
-	if errors.As(err, &exitErr) || errors.As(err, &sshExit) {
-		return ErrAgent
+	if errors.As(err, &exitErr) {
+		return &AgentExitError{Code: exitErr.ExitCode()}
+	}
+	if errors.As(err, &sshExit) {
+		return &AgentExitError{Code: sshExit.ExitStatus()}
 	}
 	return err
 }
