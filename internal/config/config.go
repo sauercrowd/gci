@@ -30,12 +30,12 @@ type Config struct {
 }
 
 type Image struct {
-	Packages     []string          `toml:"packages,omitempty" json:"packages,omitempty"`
-	User         string            `toml:"user,omitempty" json:"user"`
-	Source       string            `toml:"source,omitempty" json:"source,omitempty"`
-	Env          map[string]string `toml:"env,omitempty" json:"env,omitempty"`
-	SnapshotStep string            `toml:"snapshot_step,omitempty" json:"snapshot_step,omitempty"`
-	Steps        []Step            `toml:"steps,omitempty" json:"steps,omitempty"`
+	Packages  []string          `toml:"packages,omitempty" json:"packages,omitempty"`
+	User      string            `toml:"user,omitempty" json:"user"`
+	Source    string            `toml:"source,omitempty" json:"source,omitempty"`
+	Env       map[string]string `toml:"env,omitempty" json:"env,omitempty"`
+	CarryOver string            `toml:"carry_over,omitempty" json:"carry_over,omitempty"`
+	Steps     []Step            `toml:"steps,omitempty" json:"steps,omitempty"`
 }
 
 type Step struct {
@@ -158,8 +158,8 @@ func (c *Config) Validate() error {
 			}
 			stepNames[step.Name] = true
 		}
-		if image.SnapshotStep != "" && !stepNames[image.SnapshotStep] {
-			return fmt.Errorf("image %q: snapshot_step %q does not name a step", name, image.SnapshotStep)
+		if image.CarryOver != "" && !stepNames[image.CarryOver] {
+			return fmt.Errorf("image %q: carry_over %q does not name a step", name, image.CarryOver)
 		}
 	}
 	volumeOwner := map[string]string{}
