@@ -10,14 +10,15 @@ func TestVolumesToDeleteUsesOwnersAndExactLegacyNames(t *testing.T) {
 		{Name: "gci-shop-api-pgdata", Type: "custom", Config: map[string]string{"user.gci.app": "shop-api"}},
 		{Name: "gci-shop-api-unclaimed", Type: "custom"},
 		{Name: "gci-shop-db", Type: "custom", Config: map[string]string{"user.gci.app": "shop"}},
-		{Name: "gcicache-shop-web", Type: "custom", Config: map[string]string{"user.gci.app": "shop"}},
+		{Name: "gcicache-shop-owned", Type: "custom", Config: map[string]string{"user.gci.app": "shop"}},
+		{Name: "gcicache-shop-web", Type: "custom"},
 		{Name: "gci-shop-legacy", Type: "custom"},
 		{Name: "gci-shop-other", Type: "custom", Config: map[string]string{"user.gci.app": "shop-api"}},
 		{Name: "gci-shop-image", Type: "image", Config: map[string]string{"user.gci.app": "shop"}},
 	}
-	legacy := map[string]bool{"gci-shop-legacy": true}
+	legacy := map[string]bool{"gci-shop-legacy": true, "gcicache-shop-web": true}
 	got := volumesToDelete("shop", volumes, legacy)
-	want := []string{"gci-shop-db", "gci-shop-legacy", "gcicache-shop-web"}
+	want := []string{"gci-shop-db", "gci-shop-legacy", "gcicache-shop-owned", "gcicache-shop-web"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("volumesToDelete = %#v, want %#v", got, want)
 	}

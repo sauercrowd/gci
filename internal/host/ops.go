@@ -112,6 +112,9 @@ func Remove(ctx context.Context, w io.Writer, app string, volumes bool) error {
 				legacy[volumeName(app, volume)] = true
 			}
 		}
+		for image := range st.Releases {
+			legacy[cacheVolumeName(app, image)] = true
+		}
 		for _, pool := range pools {
 			volumes, err := listCustomVolumes(ctx, pool)
 			if err != nil {
