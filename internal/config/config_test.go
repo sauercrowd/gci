@@ -74,6 +74,9 @@ func TestValidate(t *testing.T) {
 		"used by both":                  `app = "a"` + "\n[images.a]\n[services.a]\nimage = \"a\"\ncommand = \"x\"\nvolumes = { v = \"/v\" }\n[services.b]\nimage = \"a\"\ncommand = \"x\"\nvolumes = { v = \"/w\" }",
 		"health requires port":          `app = "a"` + "\n[images.a]\n[services.a]\nimage = \"a\"\ncommand = \"x\"\nhealth = \"/h\"",
 		"environment variable":          `app = "a"` + "\n[images.a]\n[services.a]\nimage = \"a\"\ncommand = \"x\"\nenv = { \"bad-env\" = \"value\" }",
+		"secret environment":            `app = "a"` + "\n[images.a]\n[services.a]\nimage = \"a\"\ncommand = \"x\"\nsecrets = { \"bad-env\" = \"valid\" }",
+		"secret name":                   `app = "a"` + "\n[images.a]\n[services.a]\nimage = \"a\"\ncommand = \"x\"\nsecrets = { TOKEN = \"Invalid_Name\" }",
+		"also defined in env":           `app = "a"` + "\n[images.a]\n[services.a]\nimage = \"a\"\ncommand = \"x\"\nenv = { TOKEN = \"x\" }\nsecrets = { TOKEN = \"token\" }",
 		"image is required":             `app = "a"` + "\n[services.a]\ncommand = \"x\"",
 		"unknown image":                 `app = "a"` + "\n[services.a]\nimage = \"missing\"\ncommand = \"x\"",
 		"image \"Bad_Name\" must match": `app = "a"` + "\n[images.Bad_Name]\n[services.a]\nimage = \"Bad_Name\"\ncommand = \"x\"",
@@ -124,5 +127,18 @@ command = "worker"
 	}
 	if got := cfg.ReferencedImages(); !reflect.DeepEqual(got, []string{"web"}) {
 		t.Fatalf("referenced images = %v, want [web]", got)
+	}
+}
+
+func TestValidateSecretName(t *testing.T) {
+	for _, name := range []string{"ok", "secret.1", "secret-name_2"} {
+		if err := ValidateSecretName(name); err != nil {
+			t.Errorf("%q: %v", name, err)
+		}
+	}
+	for _, name := range []string{"", "Upper", "has space", strings.Repeat("a", 64), "-leading"} {
+		if err := ValidateSecretName(name); err == nil {
+			t.Errorf("%q unexpectedly valid", name)
+		}
 	}
 }

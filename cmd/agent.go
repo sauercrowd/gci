@@ -3,12 +3,15 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
+	"strings"
 
 	"github.com/sauercrowd/gci/internal/host"
 	"github.com/spf13/cobra"
 )
 
+// The agent subcommands run on the target host as root; the CLI invokes them over SSH.
 func init() {
 	agent := &cobra.Command{Use: "agent", Short: "Host-side commands (invoked by the CLI)", Hidden: true}
 
@@ -87,6 +90,47 @@ func init() {
 	}
 	rm.Flags().BoolVar(&volumes, "volumes", false, "")
 
+	secretSet := &cobra.Command{
+		Use:  "secret-set <app> <name>",
+		Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			value, err := io.ReadAll(io.LimitReader(os.Stdin, 64*1024+1))
+			if err != nil {
+				return err
+			}
+			if err := host.SetSecret(args[0], args[1], value); err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "secret %q set\n", args[1])
+			return nil
+		},
+	}
+	secretList := &cobra.Command{
+		Use:  "secret-ls <app>",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			names, err := host.ListSecrets(args[0])
+			if err != nil {
+				return err
+			}
+			if len(names) != 0 {
+				_, err = fmt.Fprintln(cmd.OutOrStdout(), strings.Join(names, "\n"))
+			}
+			return err
+		},
+	}
+	secretRemove := &cobra.Command{
+		Use:  "secret-rm <app> <name>",
+		Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := host.RemoveSecret(args[0], args[1]); err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "secret %q removed\n", args[1])
+			return nil
+		},
+	}
+
 	firewall := &cobra.Command{
 		Use: "firewall",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -94,6 +138,6 @@ func init() {
 		},
 	}
 
-	agent.AddCommand(bootstrap, apply, hasSource, receive, status, logs, rm, firewall)
+	agent.AddCommand(bootstrap, apply, hasSource, receive, status, logs, rm, secretSet, secretList, secretRemove, firewall)
 	rootCmd.AddCommand(agent)
 }

@@ -161,6 +161,30 @@ func Apply(ctx context.Context, w io.Writer, plan Plan) error {
 		}
 	}
 
+	resolved := make(map[string]map[string]string, len(order))
+	digests := make(map[string]string, len(order))
+	var missing []string
+	for _, name := range order {
+		svc := cfg.Services[name]
+		values, err := resolveSecrets(cfg.App, svc)
+		if err != nil {
+			if strings.HasPrefix(err.Error(), "missing secrets:") {
+				missing = append(missing, name+": "+strings.TrimPrefix(err.Error(), "missing secrets: "))
+				continue
+			}
+			return fmt.Errorf("%s: %w", name, err)
+		}
+		digest, err := secretDigest(values)
+		if err != nil {
+			return fmt.Errorf("%s: secret digest: %w", name, err)
+		}
+		resolved[name] = values
+		digests[name] = digest
+	}
+	if len(missing) != 0 {
+		return fmt.Errorf("missing secrets: %s", strings.Join(missing, "; "))
+	}
+
 	baseFP := ""
 	for _, imageName := range imageNames {
 		image := cfg.Images[imageName]
@@ -200,7 +224,14 @@ func Apply(ctx context.Context, w io.Writer, plan Plan) error {
 	}
 	for _, name := range order {
 		imageName := cfg.Services[name].Image
-		did, err := applyService(ctx, w, hc, cfg, name, plan.Sources[imageName], prepared[imageName], st)
+		image := prepared[imageName]
+		svcPrepared := preparedService{
+			env:          image.env,
+			secrets:      resolved[name],
+			secretDigest: digests[name],
+			release:      image.release,
+		}
+		did, err := applyService(ctx, w, hc, cfg, name, plan.Sources[imageName], svcPrepared, st)
 		if err != nil {
 			return fmt.Errorf("%s: %w", name, err)
 		}
@@ -261,10 +292,14 @@ func Apply(ctx context.Context, w io.Writer, plan Plan) error {
 }
 
 func revision(cfg *config.Config, name, env, sourceHash string) string {
-	return revisionWithRelease(cfg, name, env, sourceHash, time.Time{})
+	return revisionWithSecrets(cfg, name, env, sourceHash, "")
 }
 
-func revisionWithRelease(cfg *config.Config, name, env, releaseKey string, releaseCreated time.Time) string {
+func revisionWithSecrets(cfg *config.Config, name, env, releaseKey, secretsHash string) string {
+	return revisionWithRelease(cfg, name, env, releaseKey, secretsHash, time.Time{})
+}
+
+func revisionWithRelease(cfg *config.Config, name, env, releaseKey, secretsHash string, releaseCreated time.Time) string {
 	svc := *cfg.Services[name]
 	svc.Routes = nil // routing changes do not require a new container
 	image := *cfg.Images[svc.Image]
@@ -275,13 +310,14 @@ func revisionWithRelease(cfg *config.Config, name, env, releaseKey string, relea
 		Env            string
 		Release        string
 		ReleaseCreated time.Time
+		Secrets        string
 		Net            string
-	}{svc, image, env, releaseKey, releaseCreated, "release"})
+	}{svc, image, env, releaseKey, releaseCreated, secretsHash, "release"})
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:])[:12]
 }
 
-func applyService(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.Config, name, sourceHash string, prepared preparedImage, st *AppState) (bool, error) {
+func applyService(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.Config, name, sourceHash string, prepared preparedService, st *AppState) (bool, error) {
 	svc := cfg.Services[name]
 	image := cfg.Images[svc.Image]
 	app := cfg.App
@@ -299,7 +335,7 @@ func applyService(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.
 		releaseKey = prepared.release.Key
 		releaseCreated = prepared.release.Created
 	}
-	rev := revisionWithRelease(cfg, name, env, releaseKey, releaseCreated)
+	rev := revisionWithRelease(cfg, name, env, releaseKey, prepared.secretDigest, releaseCreated)
 	cur := st.Services[name]
 	if cur != nil && cur.Rev == rev {
 		inst, _ := getInstance(ctx, cur.Container)
@@ -397,7 +433,7 @@ func applyService(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.
 	}
 	waitSystemd(ctx, container)
 
-	envVars := serviceEnvVars(app, name, svc, image, env)
+	envVars := serviceEnvVars(app, name, svc, image, env, prepared.secrets)
 	var pre []string
 	for _, vol := range vols {
 		pre = append(pre, fmt.Sprintf("+/bin/chown %s: %s", image.User, svc.Volumes[vol]))
@@ -495,7 +531,7 @@ func applyService(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.
 	return true, nil
 }
 
-func serviceEnvVars(app, name string, svc *config.Service, image *config.Image, env string) map[string]string {
+func serviceEnvVars(app, name string, svc *config.Service, image *config.Image, env string, secrets map[string]string) map[string]string {
 	vars := map[string]string{
 		"PATH":          env + "/bin:/usr/bin:/bin",
 		"SSL_CERT_FILE": env + "/etc/ssl/certs/ca-bundle.crt",
@@ -513,6 +549,9 @@ func serviceEnvVars(app, name string, svc *config.Service, image *config.Image, 
 		vars[key] = value
 	}
 	for key, value := range svc.Env {
+		vars[key] = value
+	}
+	for key, value := range secrets {
 		vars[key] = value
 	}
 	return vars
