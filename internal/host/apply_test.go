@@ -1,6 +1,46 @@
 package host
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/sauercrowd/gci/internal/config"
+)
+
+func TestShouldHoldRestart(t *testing.T) {
+	cur := &ServiceState{Rev: "old"}
+	tests := []struct {
+		name       string
+		restart    string
+		cur        *ServiceState
+		rev        string
+		restartSet map[string]bool
+		want       bool
+	}{
+		{name: "manual change", restart: "manual", cur: cur, rev: "new", want: true},
+		{name: "auto change", restart: "auto", cur: cur, rev: "new"},
+		{name: "first deploy", restart: "manual", rev: "new"},
+		{name: "unchanged revision", restart: "manual", cur: cur, rev: "old"},
+		{name: "explicit trigger", restart: "manual", cur: cur, rev: "new", restartSet: map[string]bool{"db": true}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := shouldHoldRestart("db", &config.Service{Restart: tt.restart}, tt.cur, tt.rev, tt.restartSet)
+			if got != tt.want {
+				t.Fatalf("shouldHoldRestart() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidateRestartNames(t *testing.T) {
+	cfg := &config.Config{Services: map[string]*config.Service{"web": {}, "db": {}}}
+	if err := ValidateRestartNames(cfg, []string{"db", "web"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateRestartNames(cfg, []string{"nope"}); err == nil || err.Error() != `--restart: unknown service "nope"` {
+		t.Fatalf("unknown service error = %v", err)
+	}
+}
 
 func TestShouldDeleteOrphanScopesLegacyDepsToApp(t *testing.T) {
 	keep := map[string]bool{"gci-demo-web-r1234567": true}

@@ -47,6 +47,7 @@ type Step struct {
 type Service struct {
 	Image         string            `toml:"image" json:"image"`
 	Migrate       string            `toml:"migrate,omitempty" json:"migrate,omitempty"`
+	Restart       string            `toml:"restart,omitempty" json:"restart,omitempty"`
 	Command       string            `toml:"command" json:"command"`
 	Setup         string            `toml:"setup,omitempty" json:"setup,omitempty"`
 	Env           map[string]string `toml:"env,omitempty" json:"env,omitempty"`
@@ -114,6 +115,13 @@ func (c *Config) applyDefaults() {
 	for _, svc := range c.Services {
 		if svc == nil {
 			continue
+		}
+		if svc.Restart == "" {
+			if len(svc.Volumes) > 0 {
+				svc.Restart = "manual"
+			} else {
+				svc.Restart = "auto"
+			}
 		}
 		if svc.HealthTimeout == 0 {
 			svc.HealthTimeout = 120
@@ -188,6 +196,11 @@ func (c *Config) Validate() error {
 		}
 		if strings.TrimSpace(svc.Command) == "" {
 			return fmt.Errorf("service %q: command is required", name)
+		}
+		switch svc.Restart {
+		case "auto", "manual":
+		default:
+			return fmt.Errorf("service %q: restart must be \"auto\" or \"manual\"", name)
 		}
 		for _, dep := range svc.DependsOn {
 			if _, ok := c.Services[dep]; !ok {

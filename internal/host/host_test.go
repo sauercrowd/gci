@@ -265,6 +265,22 @@ func TestRevisionIgnoresRoutes(t *testing.T) {
 	}
 }
 
+func TestRevisionIgnoresRestartPolicy(t *testing.T) {
+	cfg := &config.Config{
+		App:      "a",
+		Images:   map[string]*config.Image{"app": {User: "gci"}},
+		Services: map[string]*config.Service{"web": {Image: "app", Command: "x"}},
+	}
+	revisions := make([]string, 0, 3)
+	for _, restart := range []string{"", "auto", "manual"} {
+		cfg.Services["web"].Restart = restart
+		revisions = append(revisions, revision(cfg, "web", "/nix/store/env", "release"))
+	}
+	if revisions[0] != revisions[1] || revisions[0] != revisions[2] {
+		t.Fatalf("restart policy changed revision: %v", revisions)
+	}
+}
+
 func TestSecretRevisionScope(t *testing.T) {
 	useTestSecretRoot(t)
 	cfg := &config.Config{

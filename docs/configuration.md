@@ -46,12 +46,13 @@ copy-on-write container.
 | --- | --- |
 | `image` | **Required.** Name of an existing image. |
 | `command` | **Required.** Main process, run as the image user under systemd. |
+| `restart` | `auto` or `manual`. Defaults to `manual` for services with volumes and `auto` otherwise. Manual services keep their running container when their revision changes; use `gci deploy --restart <service>` to apply pending changes. This does not restart an unchanged service. |
 | `setup` | Shell script run before every start. |
 | `migrate` | Optional command run as the image user for changed services. Stateless services migrate in a temporary copy while the old version serves; services with volumes migrate after the old container stops, with volumes attached, before the new one starts. Migrations have a 10-minute timeout and should be idempotent and backwards-compatible. |
 | `env` | Runtime environment; overrides image environment. |
 | `secrets` | `ENV_VAR = "secret-name"` mappings injected only at activation, never into image builds. |
 | `port`, `health`, `health_command`, `health_timeout` | Port and deploy-time checks. HTTP/TCP/systemd health runs first; the optional command then runs as the image user with service environment and secrets. It can be set without `port` or `health`; timeout defaults to 120 seconds. |
-| `volumes` | `name = "/path"` pairs. Services with volumes are stateful and are replaced stop-then-start. |
+| `volumes` | `name = "/path"` pairs. Services with volumes are stateful and default to `restart = "manual"`; when restarted, they are stopped then started on the same volume. |
 | `depends_on` | Services deployed first. Cycles are rejected. |
 | `routes` | Envoy routes; host defaults to `*`, prefix to `/`. |
 | `routes[].tls` | `acme`, `self-signed`, `custom`, or `off`. Defaults to `self-signed` for `*`, wildcard hosts, localhost names, and IP literals; other hosts default to `acme`. ACME requires a public, non-wildcard DNS name. |

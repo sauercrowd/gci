@@ -50,6 +50,9 @@ command = "cache"
 	if cfg.Images["web"].User != "gci" || web.Routes[0] != (Route{Host: "*", Prefix: "/", TLS: "self-signed"}) {
 		t.Errorf("defaults not applied: %+v", web)
 	}
+	if web.Restart != "auto" || cfg.Services["db"].Restart != "manual" {
+		t.Errorf("restart defaults = web:%q db:%q, want auto/manual", web.Restart, cfg.Services["db"].Restart)
+	}
 	if got := cfg.Images["web"].Source; got != filepath.Join(filepath.Dir(p), "app") {
 		t.Errorf("image source not resolved relative to config: %s", got)
 	}
@@ -87,6 +90,7 @@ func TestValidate(t *testing.T) {
 		"carry_over":                       `app = "a"` + "\n[images.a]\ncarry_over = \"missing\"\nsteps = [{ name = \"deps\", run = \"true\" }]\n[services.a]\nimage = \"a\"\ncommand = \"x\"",
 		"image \"a\": environment":         `app = "a"` + "\n[images.a]\nenv = { \"bad-env\" = \"value\" }\n[services.a]\nimage = \"a\"\ncommand = \"x\"",
 		"migrate must not be blank":        `app = "a"` + "\n[images.a]\n[services.a]\nimage = \"a\"\ncommand = \"x\"\nmigrate = \"   \"",
+		"restart must be":                  `app = "a"` + "\n[images.a]\n[services.a]\nimage = \"a\"\ncommand = \"x\"\nrestart = \"sometimes\"",
 		"health_command must not be blank": `app = "a"` + "\n[images.a]\n[services.a]\nimage = \"a\"\ncommand = \"x\"\nhealth_command = \"   \"",
 		"strict mode":                      `app = "a"` + "\n[images.a]\nunknown = \"value\"\n[services.a]\nimage = \"a\"\ncommand = \"x\"",
 		"missing in the target struct":     `app = "a"` + "\n[images.a]\nsteps = [{ run = \"true\", unknown = \"value\" }]\n[services.a]\nimage = \"a\"\ncommand = \"x\"",
@@ -96,6 +100,23 @@ func TestValidate(t *testing.T) {
 		if err == nil || !strings.Contains(strings.ToLower(err.Error()), strings.ToLower(want)) {
 			t.Errorf("%q: got %v", want, err)
 		}
+	}
+}
+
+func TestManualRestartAllowedForStatelessService(t *testing.T) {
+	cfg, err := Load(write(t, `
+app = "demo"
+[images.app]
+[services.web]
+image = "app"
+command = "server"
+restart = "manual"
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Services["web"].Restart != "manual" {
+		t.Fatalf("restart = %q, want manual", cfg.Services["web"].Restart)
 	}
 }
 

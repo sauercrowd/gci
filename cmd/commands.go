@@ -83,6 +83,7 @@ func init() {
 	bootstrap.Flags().StringVar(&acmeCABundle, "acme-ca-bundle", "", "host PEM bundle trusted for the ACME directory")
 
 	var clean bool
+	var restart []string
 	deploy := &cobra.Command{
 		Use:   "deploy",
 		Short: "Deploy the services in gci.toml",
@@ -92,8 +93,11 @@ func init() {
 				return err
 			}
 			defer h.Close()
+			if err := host.ValidateRestartNames(cfg, restart); err != nil {
+				return err
+			}
 			ctx := cmd.Context()
-			plan := host.Plan{Config: cfg, Sources: map[string]string{}, Clean: clean || cleanEnabled(os.Getenv("GCI_CLEAN"))}
+			plan := host.Plan{Config: cfg, Sources: map[string]string{}, Clean: clean || cleanEnabled(os.Getenv("GCI_CLEAN")), Restart: restart}
 			for _, imageName := range cfg.ReferencedImages() {
 				image := cfg.Images[imageName]
 				if image.Source == "" {
@@ -121,6 +125,7 @@ func init() {
 		},
 	}
 	deploy.Flags().BoolVar(&clean, "clean", false, "rebuild images from a fresh base")
+	deploy.Flags().StringSliceVar(&restart, "restart", nil, "apply pending changes to a manual service; unchanged services stay unchanged")
 
 	status := &cobra.Command{
 		Use:   "status",
