@@ -1,6 +1,6 @@
 # gci
 
-Deploy services to any Linux host over SSH, without building images.
+Deploy services to any Linux host over SSH without a container registry.
 
 - [Installation](/installation/)
 - [Configuration (`gci.toml`)](/configuration)

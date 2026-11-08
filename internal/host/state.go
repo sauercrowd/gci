@@ -25,6 +25,7 @@ type AppState struct {
 type ServiceState struct {
 	Container string            `json:"container"`
 	IP        string            `json:"ip"`
+	Image     string            `json:"image,omitempty"`
 	Rev       string            `json:"rev"`
 	Env       string            `json:"env"`
 	Release   string            `json:"release,omitempty"`
@@ -36,13 +37,13 @@ type ServiceState struct {
 }
 
 type Release struct {
-	Key       string    `json:"key"`
-	ChainKey  string    `json:"chain_key"`
-	Instance  string    `json:"instance"`
-	Installed bool      `json:"installed,omitempty"`
-	Env       string    `json:"env"`
-	Source    string    `json:"source"`
-	Created   time.Time `json:"created"`
+	Key             string    `json:"key"`
+	ChainKey        string    `json:"chain_key"`
+	Instance        string    `json:"instance"`
+	HasStepSnapshot bool      `json:"has_step_snapshot,omitempty"`
+	Env             string    `json:"env"`
+	Source          string    `json:"source"`
+	Created         time.Time `json:"created"`
 }
 
 // HostConfig is written by bootstrap and read by every later agent call.
@@ -120,11 +121,11 @@ func allocateVIP(hc *HostConfig, st *AppState) (string, error) {
 func appDir(app string) string    { return filepath.Join(stateRoot, "apps", app) }
 func statePath(app string) string { return filepath.Join(appDir(app), "state.json") }
 func envoyDir() string            { return filepath.Join(stateRoot, "envoy") }
-func releaseRoot(app, svc, key string) string {
-	return filepath.Join(appDir(app), "releases", svc, key[:12])
+func releaseRoot(app, image, key string) string {
+	return filepath.Join(appDir(app), "releases", image, key[:12])
 }
-func sourceDir(app, svc, hash string) string {
-	return filepath.Join(appDir(app), "sources", svc, hash)
+func sourceDir(app, image, hash string) string {
+	return filepath.Join(appDir(app), "sources", image, hash)
 }
 
 func loadState(app string) (*AppState, error) {

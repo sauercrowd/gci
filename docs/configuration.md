@@ -1,59 +1,62 @@
 # Configuration (`gci.toml`)
 
-```toml
-app     = "platform"        # ^[a-z][a-z0-9-]{0,23}$
-server  = "prod"            # optional: default server for this app
-nixpkgs = "github:NixOS/nixpkgs/<rev>"   # optional: pinned by default
+Build inputs belong to reusable images. Services reference an image and define
+only their runtime behavior:
 
-[services.<name>]
-packages       = ["postgresql_16", "python3.withPackages (p: [ p.psycopg ])"]
-source         = "./app"
-install        = "npm install --no-audit --no-fund"
-build          = "npm run build"
-reuse          = "dependencies"
-migrate        = "python3 server.py migrate"
-command        = "python3 server.py"
-setup          = "..."
-user           = "gci"
-env            = { KEY = "value" }
-secrets        = { API_TOKEN = "api-token" }
-port           = 8080
-health         = "/healthz"
-health_timeout = 120
-volumes        = { data = "/var/lib/data" }
-depends_on     = ["postgres"]
-routes         = [{ host = "app.example.com", prefix = "/", tls = "acme" }]
-cpu            = "2"
-memory         = "1GiB"
+```toml
+app = "shop"
+
+[images.web]
+packages = ["nodejs_22"]
+source = "."
+env = { NODE_ENV = "production" }
+carry_over = "deps"
+steps = [
+  { name = "deps", run = "npm install --no-audit --no-fund" },
+  { name = "build", run = "npm run build" },
+]
+
+[services.web]
+image = "web"
+command = "node server.js"
+port = 8080
+health = "/healthz"
+health_command = "node check.js"
+routes = [{ host = "shop.example.com", prefix = "/" }]
 ```
+
+## Images
 
 | Key | Description |
 | --- | --- |
-| `packages` | Nix expressions evaluated with `nixpkgs` in scope. gci combines them with `cacert`, `coreutils`, and `bashInteractive` into one `buildEnv` on `PATH`. |
-| `source` | A local directory, relative to `gci.toml`, shipped to a release snapshot and used as the writable `/app` working directory. `.git`, `node_modules`, and `__pycache__` are skipped. |
-| `install` | Optional dependency-install command, such as `npm install --no-audit --no-fund`. Requires `source`; runs after source sync in the release builder and never receives service `env` or secrets. The package manager decides what to download or update. |
-| `build` | Optional build command run after source sync and `install`, with `sh -e -c`. Requires `source`; receives service `env` but not secrets. |
-| `reuse` | How a new release build starts: `dependencies` (default) copies the newest matching release's `installed` snapshot; `build` copies the newest matching full release; `nothing` starts from the base image. |
-| `migrate` | Optional shell command run as the service user in `/app`, with the service's runtime environment and secrets, for changed services only. Stateless services migrate in a temporary copy while the old version keeps serving; services with volumes migrate in the new container after the old one is stopped, with volumes attached, before the service starts. Migrations must be backwards-compatible in both cases: stateless services migrate while the old version keeps serving, and if activation fails after a migration succeeded, the old version (restarted, for stateful services) runs against the migrated data. A failure aborts the deploy and restarts the old container. Migrations have a 10-minute timeout and run before `setup` and `command`; make them idempotent. |
-| `command` | **Required.** The main process, run under systemd as `gci-<name>.service` with `Restart=always`. |
-| `setup` | A shell script run before every start (`ExecStartPre`), for example first-boot initialisation. |
-| `user` | The user to run as. Default `gci`. It is created in the container, and volumes are owned by it. |
-| `env` | Environment variables. |
-| `secrets` | `ENV_VAR = "secret-name"` mappings. Names use lowercase letters, digits, `.`, `_`, and `-`; environment variable names follow shell identifier syntax. A key cannot appear in both `env` and `secrets`. Values are read from `gci secret set` and injected only when the service container is activated. |
-| `port` | The port the service listens on. Required for `routes`. |
-| `health` | An HTTP path that must return 2xx/3xx. If only `port` is set, the check is a TCP connect. With neither, the check is that the systemd unit is active. |
-| `health_command` | Optional shell command run during deployment after the HTTP, TCP, or systemd-active probe passes. It runs as the service user, with the service environment (including secrets); it may be set without `port` or `health`. Only non-whitespace values are required. |
-| `health_timeout` | Seconds to wait for health. Default 120. A unit that restarts 5 times fails the deploy early. |
-| `volumes` | `name = "/path"` pairs. Each is an Incus custom volume named `gci-<app>-<name>`, and it survives redeploys and `gci rm`. A service with volumes is **stateful**: it is stopped, then started, rather than rolled. |
-| `depends_on` | Services that are deployed first. Cycles are rejected. |
-| `routes` | Envoy routes. Each route has `host` (default `*`), `prefix` (default `/`), and optional `tls`, `cert`, and `key` settings. |
+| `packages` | Nix expressions evaluated with `nixpkgs` in scope and combined into the image's runtime environment. |
+| `user` | User for build steps and service commands. Defaults to `gci`. |
+| `source` | Optional local directory, relative to `gci.toml`, uploaded to `/app`. `.git`, `node_modules`, and `__pycache__` are skipped. |
+| `env` | Environment inherited by build steps and services using the image. Service `env` overrides it. |
+| `steps` | Ordered `{ name?, run }` commands executed in `/app` (created empty when no source is configured). Names are optional and unique per image. |
+| `carry_over` | Optional step name. Omitted means every build starts from a fresh base. |
+
+Images not referenced by a service are valid but are not built. Several services
+can share an image: gci prepares it once, then gives each service its own
+copy-on-write container.
+
+## Services
+
+| Key | Description |
+| --- | --- |
+| `image` | **Required.** Name of an existing image. |
+| `command` | **Required.** Main process, run as the image user under systemd. |
+| `setup` | Shell script run before every start. |
+| `migrate` | Optional command run as the image user for changed services. Stateless services migrate in a temporary copy while the old version serves; services with volumes migrate after the old container stops, with volumes attached, before the new one starts. Migrations have a 10-minute timeout and should be idempotent and backwards-compatible. |
+| `env` | Runtime environment; overrides image environment. |
+| `secrets` | `ENV_VAR = "secret-name"` mappings injected only at activation, never into image builds. |
+| `port`, `health`, `health_command`, `health_timeout` | Port and deploy-time checks. HTTP/TCP/systemd health runs first; the optional command then runs as the image user with service environment and secrets. It can be set without `port` or `health`; timeout defaults to 120 seconds. |
+| `volumes` | `name = "/path"` pairs. Services with volumes are stateful and are replaced stop-then-start. |
+| `depends_on` | Services deployed first. Cycles are rejected. |
+| `routes` | Envoy routes; host defaults to `*`, prefix to `/`. |
 | `routes[].tls` | `acme`, `self-signed`, `custom`, or `off`. Defaults to `self-signed` for `*`, wildcard hosts, localhost names, and IP literals; other hosts default to `acme`. ACME requires a public, non-wildcard DNS name. |
 | `routes[].cert`, `routes[].key` | Secret names containing a custom certificate chain PEM and matching private key PEM. Both are required only when `tls = "custom"`; the certificate must be valid for the route host. |
-| `cpu`, `memory` | Incus `limits.cpu` and `limits.memory`. |
-
-## Health checks
-
-The HTTP, TCP, or systemd-active probe runs first. If `health_command` is set, gci then runs it inside the new container before promoting traffic, retrying once per second until it succeeds or the shared `health_timeout` expires. Each command attempt is capped at 10 seconds. The command runs only during deployment; Envoy does not run it, and continuous health-command checks are not supported.
+| `cpu`, `memory` | Incus resource limits. |
 
 ## TLS and certificates
 
@@ -74,44 +77,48 @@ Create or update them with `gci secret set`. The certificate and key are validat
 
 Bootstrap defaults to host ports 80 and 443. ACME also requires the hostname to resolve to the host and inbound HTTP traffic to reach port 80. The daily `gci-renew.timer` retries ACME issuance and renews certificates before expiry.
 
-## Release snapshots
+Secret names use lowercase letters, digits, `.`, `_`, and `-`; environment
+variable names follow shell identifier syntax. A key cannot appear in both
+`env` and `secrets`.
 
-Services with `source` are prepared before any running service is activated. A build chain is keyed by the base-image fingerprint, Nix environment path, user, `install` command, and `reuse` mode. With `reuse = "build"`, `build` and sorted service `env` values are also part of the chain key. Each release is keyed by that chain key, the source hash, `build`, and sorted service `env`.
+Build steps always run in `/app`, which is created empty when the image has no
+source. Health and migration commands run in `/app` when the image has source;
+otherwise they run in the image user's home directory.
 
-For `reuse = "dependencies"`, gci starts from the newest retained release in the same chain that has an `installed` snapshot; that snapshot is created after `install` and before `build`. `reuse = "build"` starts from the newest matching full release, while `reuse = "nothing"` starts from the base image. A changed chain or no matching retained release also starts from the base image. Source files are synced using a manifest stored in the container; only previously copied source paths that have disappeared are removed, so install/build-created files are not swept by path heuristics.
+## Build snapshots
 
-`gci deploy --clean` or `GCI_CLEAN=1`, `true`, or `yes` forces every source service to rebuild from a fresh base, even when its matching release is already cached. Environment values are case-insensitive. This is useful for clean rebuilds and for troubleshooting. For example, a GitHub Actions workflow can request it manually or with `[clean]` in a commit message:
+Every build runs all steps. With `carry_over`, the files present after that step
+in the previous build are still there, so idempotent steps like `npm install` or
+`go mod download` finish quickly. Steps must therefore be idempotent. With
+`carry_over = "deps"`, gci can start from the newest release of the same image
+whose build chain matches and has the `deps` snapshot. Steps after that boundary
+do not affect the chain key; changes to packages, user, image environment, or
+steps through the boundary start from a fresh base. Without `carry_over`, builds
+always start fresh.
 
-```yaml
-on:
-  push:
-  workflow_dispatch:
-    inputs:
-      clean: { type: boolean, default: false }
-# ...
-- run: gci deploy
-  env:
-    GCI_CLEAN: ${{ inputs.clean || contains(github.event.head_commit.message, '[clean]') }}
-```
+The snapshot is taken immediately after the named step, with the build cache
+device detached. A snapshot on the final step instead starts from the previous
+release itself, carrying its output and caches forward; this can leave stale
+artifacts (for example, JavaScript emitted by `tsc` for a deleted source file).
+Choose an earlier dependency step when generated output should be recreated.
+Source files are synchronized with a manifest, so removed source files are
+deleted without sweeping files created by build steps.
 
-With `reuse = "build"`, generated outputs are carried into the next build. This can leave stale artifacts—for example, `tsc` may leave JavaScript for a source file that was removed. Use `reuse = "dependencies"` or a clean deploy when the build must start without prior output.
+`gci deploy --clean` or `GCI_CLEAN=1` (also `true` or `yes`) forces fresh-base
+builds. Image releases are retained per image: the newest three plus any release
+currently used by a service. Image environment changes affect release keys;
+service environment changes do not.
 
-Deploy activation is a copy-on-write copy of the stopped release, followed by runtime configuration, start, health checking, and the Envoy switch. A failed install/build/migration or a missing secret does not replace a running container. Secrets are not available to install/build commands and do not enter release snapshots.
+Node projects should use `npm install --no-audit --no-fund` in a dependency step,
+not `npm ci`, so the snapshot can be reused while the command still resolves
+dependencies.
 
-The host retains the current release and the two newest prior releases per service. Each retained release has its own Nix GC root; older release containers are removed after a successful apply.
+## Storage and service discovery
 
-## Storage and build cache
+Build steps share a persistent per-image `gcicache-<app>-<image>` volume mounted
+at `/var/cache/gci`. `gci rm --volumes` removes application volumes and caches.
+Host secrets remain under `/var/lib/gci/secrets/<app>` until explicitly removed.
 
-Bootstrap creates a loop-backed Incus btrfs pool named `gci`; adjust its capacity with `gci bootstrap --storage-size 50GiB`. New service and release containers use this pool for copy-on-write snapshots. The existing `gci` profile root device is not changed, and the Envoy container stays on its existing pool. If a named application volume already exists in the legacy `default` pool, gci keeps using it, so existing database data survives the migration. New volumes use `gci`.
-
-Install and build commands share a persistent per-service `gcicache-<app>-<service>` volume mounted at `/var/cache/gci`. `gci rm --volumes` deletes application volumes from both pools and these cache volumes; without `--volumes`, volumes and caches remain.
-
-`gci rm` also keeps host secrets in `/var/lib/gci/secrets/<app>`; remove them explicitly with `gci secret rm <name>`.
-
-Every service with a `port` gets a stable virtual IP (VIP) from the host's VIP range (`10.77.1.0/24` by default) and the name `<service>.<app>.internal`, e.g. `postgres.platform.internal:5432`. The VIP belongs to Envoy, not to a container: Envoy proxies it to whichever container is current, so the address never changes across deploys. Services with a `health` path are proxied as HTTP (request draining, access logs); everything else as plain TCP. Containers have `<app>.internal` as a search domain, so a bare `postgres` also works within an app.
-
-`*.internal` lookups are forwarded from the bridge's dnsmasq to Envoy's DNS listener, which answers from the same config it routes with, so deploys never rewrite DNS or `/etc/hosts`. Existing TCP connections are not migrated when a backend is replaced; clients reconnect to the new one through the same VIP.
-
-## Revisions
-
-A service is redeployed only when its revision changes. The revision includes the service definition (excluding `source` and `routes`), its Nix environment, release key, and a digest of that service's resolved secret values. Changing a secret replaces the service container while reusing its release; changing only `routes` updates Envoy without restarting anything.
+Services with ports receive stable VIPs and `<service>.<app>.internal` names.
+Envoy routes external traffic to the current container. A failed build,
+migration, missing secret, or health check does not promote a replacement.

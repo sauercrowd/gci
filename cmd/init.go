@@ -17,13 +17,17 @@ const starterConfig = `# gci.toml: see docs/configuration.md for every field and
 app = "%[1]s"
 # server = "prod"  # default target; see ` + "`gci server add`" + `
 
-[services.web]
+[images.web]
 packages = ["nodejs_22"]   # Nix packages (nixpkgs attribute names)
 source = "."               # uploaded and copied to /app
-# install = "npm install --no-audit --no-fund" # package manager reuses installed dependencies
-# build = "npm run build"  # run once per release, before activation
-reuse = "dependencies"     # dependencies (default), build (all output), or nothing (fresh)
-# migrate = "npm run db:migrate" # stateless: temp copy; volumes: before start
+carry_over = "deps"  # next build starts with the files left after this step; all steps still run. Remove to always build fresh
+steps = [
+  { name = "deps", run = "npm install --no-audit --no-fund" },
+  # { name = "build", run = "npm run build" },
+]
+
+[services.web]
+image = "web"
 command = "node server.js"
 port = 8080
 health = "/healthz"        # HTTP check before Envoy switches traffic
@@ -31,6 +35,7 @@ health = "/healthz"        # HTTP check before Envoy switches traffic
 routes = [{ host = "%[1]s.localhost", prefix = "/" }]
 # env = { NODE_ENV = "production" }
 # secrets = { SESSION_SECRET = "session-secret" }  # gci secret set session-secret
+# migrate = "npm run db:migrate" # stateless: temp copy; volumes: before start
 `
 
 var nonNameChars = regexp.MustCompile(`[^a-z0-9-]+`)

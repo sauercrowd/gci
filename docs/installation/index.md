@@ -29,7 +29,7 @@ Bootstrap is idempotent and safe to re-run. It:
 
 1. installs Incus (if missing) and runs `incus admin init --minimal`
 2. installs Nix (Determinate installer, if missing)
-3. creates the `gci0` bridge (`--subnet`, default `10.77.0.1/24`, DNS domain `gci`)
+3. creates the `gci0` bridge (omitted `--subnet` reuses an existing bridge address or defaults to `10.77.0.1/24`; changing an existing bridge subnet is unsupported; DNS domain `gci`)
 4. installs `gci-firewall.service`, which accepts forwarding for `gci0` (Docker sets `FORWARD` to `DROP`)
 5. creates the `gci` Incus profile, which mounts `/nix/store` read-only
 6. builds the `gci-base` image from `images:debian/12`
