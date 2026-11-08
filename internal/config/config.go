@@ -44,18 +44,19 @@ type Step struct {
 }
 
 type Service struct {
-	Image     string            `toml:"image" json:"image"`
-	Command   string            `toml:"command" json:"command"`
-	Setup     string            `toml:"setup,omitempty" json:"setup,omitempty"`
-	Env       map[string]string `toml:"env,omitempty" json:"env,omitempty"`
-	Secrets   map[string]string `toml:"secrets,omitempty" json:"secrets,omitempty"`
-	Port      int               `toml:"port,omitempty" json:"port,omitempty"`
-	Health    string            `toml:"health,omitempty" json:"health,omitempty"`
-	Volumes   map[string]string `toml:"volumes,omitempty" json:"volumes,omitempty"`
-	DependsOn []string          `toml:"depends_on,omitempty" json:"depends_on,omitempty"`
-	Routes    []Route           `toml:"routes,omitempty" json:"routes,omitempty"`
-	CPU       string            `toml:"cpu,omitempty" json:"cpu,omitempty"`
-	Memory    string            `toml:"memory,omitempty" json:"memory,omitempty"`
+	Image         string            `toml:"image" json:"image"`
+	Command       string            `toml:"command" json:"command"`
+	Setup         string            `toml:"setup,omitempty" json:"setup,omitempty"`
+	Env           map[string]string `toml:"env,omitempty" json:"env,omitempty"`
+	Secrets       map[string]string `toml:"secrets,omitempty" json:"secrets,omitempty"`
+	Port          int               `toml:"port,omitempty" json:"port,omitempty"`
+	Health        string            `toml:"health,omitempty" json:"health,omitempty"`
+	HealthCommand string            `toml:"health_command,omitempty" json:"health_command,omitempty"`
+	Volumes       map[string]string `toml:"volumes,omitempty" json:"volumes,omitempty"`
+	DependsOn     []string          `toml:"depends_on,omitempty" json:"depends_on,omitempty"`
+	Routes        []Route           `toml:"routes,omitempty" json:"routes,omitempty"`
+	CPU           string            `toml:"cpu,omitempty" json:"cpu,omitempty"`
+	Memory        string            `toml:"memory,omitempty" json:"memory,omitempty"`
 	// HealthTimeout is in seconds.
 	HealthTimeout int `toml:"health_timeout,omitempty" json:"health_timeout"`
 }
@@ -208,6 +209,9 @@ func (c *Config) Validate() error {
 		}
 		if svc.Health != "" && !strings.HasPrefix(svc.Health, "/") {
 			return fmt.Errorf("service %q: health must be an HTTP path starting with /", name)
+		}
+		if svc.HealthCommand != "" && strings.TrimSpace(svc.HealthCommand) == "" {
+			return fmt.Errorf("service %q: health_command must not be blank", name)
 		}
 		for _, r := range svc.Routes {
 			if !strings.HasPrefix(r.Prefix, "/") {
