@@ -8,7 +8,7 @@ Global flags: `-c/--config` (default `gci.toml`) and `-s/--server` (default: `se
 | `gci server add <name> --host h[:port] [-u user] [-i key]` | Register an SSH host in `~/.gci/servers.toml`. Use `--local` to target this machine directly. |
 | `gci server ls` / `gci server rm <name>` | List or remove registered hosts. |
 | `gci bootstrap [--http-port 80] [--subnet 10.77.0.1/24] [--vip-range 10.77.1.0/24] [--storage-size 50GiB]` | Prepare a host once, including the btrfs-backed `gci` storage pool (see [Installation](/installation/)). |
-| `gci deploy [--clean]` | Upload changed sources, build Nix envs, and roll changed services. `--clean` forces source services to rebuild from a fresh base; the equivalent environment setting is `GCI_CLEAN=1`, `true`, or `yes`. |
+| `gci deploy [--clean]` | Upload changed image sources, realize Nix envs, and roll changed services. `--clean` forces image builds to start from a fresh base; the equivalent environment setting is `GCI_CLEAN=1`, `true`, or `yes`. |
 | `gci status` | Show each service's container state, unit state, IP, port, and revision. |
 | `gci logs <service> [-n 100] [-f]` | Show a service's journal. |
 | `gci rm [--volumes]` | Remove all of the app's containers and routes. Volumes and caches are kept unless `--volumes` is passed; host secrets are kept. |
