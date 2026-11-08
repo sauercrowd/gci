@@ -427,7 +427,7 @@ func applyService(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.
 	volPools := make(map[string]string, len(vols))
 	for _, vol := range vols {
 		vn := volumeName(app, vol)
-		pool, err := volumePool(ctx, hc, vn)
+		pool, err := volumePool(ctx, hc, vn, app)
 		if err != nil {
 			return fail(err)
 		}
