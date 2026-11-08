@@ -63,6 +63,8 @@ own copy-on-write container.
 
 Jobs are one-shot commands that run in an isolated Incus container from their
 image's prepared release (or the base image when no release is needed).
+Build steps and jobs share the image's persistent cache at `/var/cache/gci`;
+services do not receive this volume or its cache environment variables.
 
 | Key | Description |
 | --- | --- |
@@ -150,8 +152,11 @@ dependencies.
 
 ## Storage and service discovery
 
-Build steps share a persistent per-image `gcicache-<app>-<image>` volume mounted
-at `/var/cache/gci`. `gci rm --volumes` removes application volumes and caches.
+Build steps and jobs share a persistent `gcicache-<app>-<image>` volume mounted
+at `/var/cache/gci`, with one volume per app and image. Services do not receive
+the cache volume or its environment variables. Override a cache variable such as
+`XDG_CACHE_HOME` in image or job `env` to use another path. Only
+`gci rm --volumes` removes application volumes and caches.
 Host secrets remain under `/var/lib/gci/secrets/<app>` until explicitly removed.
 
 Services with ports receive stable VIPs and `<service>.<app>.internal` names.

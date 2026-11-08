@@ -157,13 +157,12 @@ func jobEnvVars(app, name string, job *config.Job, image *config.Image, env stri
 	if image.User == "root" {
 		home = "/root"
 	}
-	vars := map[string]string{
-		"PATH":          env + "/bin:/usr/bin:/bin",
-		"SSL_CERT_FILE": env + "/etc/ssl/certs/ca-bundle.crt",
-		"GCI_APP":       app,
-		"GCI_JOB":       name,
-		"HOME":          home,
-	}
+	vars := cacheEnv()
+	vars["PATH"] = env + "/bin:/usr/bin:/bin"
+	vars["SSL_CERT_FILE"] = env + "/etc/ssl/certs/ca-bundle.crt"
+	vars["GCI_APP"] = app
+	vars["GCI_JOB"] = name
+	vars["HOME"] = home
 	for key, value := range image.Env {
 		vars[key] = value
 	}
@@ -177,6 +176,7 @@ func jobEnvVars(app, name string, job *config.Job, image *config.Image, env stri
 }
 
 func startJob(ctx context.Context, hc *HostConfig, cfg *config.Config, job preparedJob) (*runningJob, error) {
+	image := cfg.Images[job.job.Image]
 	var random [3]byte
 	if _, err := rand.Read(random[:]); err != nil {
 		return nil, err
@@ -223,8 +223,16 @@ func startJob(ctx context.Context, hc *HostConfig, cfg *config.Config, job prepa
 			return fail(err)
 		}
 	}
+	cacheName := cacheVolumeName(cfg.App, job.job.Image)
+	if err := ensureCacheVolume(ctx, hc, cacheName, cfg.App, job.job.Image); err != nil {
+		return fail(err)
+	}
+	if _, err := incus(ctx, "config", "device", "add", container, "cache", "disk",
+		"pool="+hc.StoragePool, "source="+cacheName, "path=/var/cache/gci"); err != nil {
+		return fail(err)
+	}
 	for _, volume := range sortedKeys(job.job.Volumes) {
-		pool, err := volumePool(ctx, hc, volumeName(cfg.App, volume))
+		pool, err := volumePool(ctx, hc, volumeName(cfg.App, volume), cfg.App)
 		if err != nil {
 			return fail(err)
 		}
@@ -240,6 +248,9 @@ func startJob(ctx context.Context, hc *HostConfig, cfg *config.Config, job prepa
 		return fail(err)
 	}
 	waitSystemd(ctx, container)
+	if _, err := incus(ctx, "exec", container, "--", "chown", image.User+":", "/var/cache/gci"); err != nil {
+		return fail(err)
+	}
 	if _, err := incus(ctx, "exec", container, "--", "mkdir", "-p", "/app"); err != nil {
 		return fail(err)
 	}
@@ -248,7 +259,7 @@ func startJob(ctx context.Context, hc *HostConfig, cfg *config.Config, job prepa
 		return fail(err)
 	}
 	_, _ = incus(ctx, "exec", container, "--", "systemctl", "try-restart", "systemd-resolved")
-	envVars := jobEnvVars(cfg.App, job.name, job.job, cfg.Images[job.job.Image], job.image.env, job.secrets)
+	envVars := jobEnvVars(cfg.App, job.name, job.job, image, job.image.env, job.secrets)
 	if err := pushFile(ctx, container, "/etc/gci/service.env", renderEnvFile(envVars), "0600"); err != nil {
 		return fail(err)
 	}

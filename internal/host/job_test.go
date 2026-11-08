@@ -36,11 +36,25 @@ func TestJobCommandWithoutSourceUsesHomeDirectory(t *testing.T) {
 
 func TestJobEnvironmentLayersAndReservedValues(t *testing.T) {
 	vars := jobEnvVars("demo", "check",
-		&config.Job{Image: "app", Env: map[string]string{"SHARED": "job"}},
-		&config.Image{User: "root", Env: map[string]string{"IMAGE_ONLY": "image", "SHARED": "image"}},
+		&config.Job{Image: "app", Env: map[string]string{"SHARED": "job", "npm_config_cache": "/job/npm"}},
+		&config.Image{User: "root", Env: map[string]string{"IMAGE_ONLY": "image", "SHARED": "image", "XDG_CACHE_HOME": "/image/cache"}},
 		"/nix/store/env", map[string]string{"SHARED": "secret"})
 	if vars["IMAGE_ONLY"] != "image" || vars["SHARED"] != "secret" || vars["HOME"] != "/root" {
 		t.Fatalf("job environment = %#v", vars)
+	}
+	cacheVars := map[string]string{
+		"XDG_CACHE_HOME":       "/image/cache",
+		"npm_config_cache":     "/job/npm",
+		"npm_config_store_dir": "/var/cache/gci/pnpm",
+		"YARN_CACHE_FOLDER":    "/var/cache/gci/yarn",
+		"UV_CACHE_DIR":         "/var/cache/gci/uv",
+		"UV_LINK_MODE":         "copy",
+		"PIP_CACHE_DIR":        "/var/cache/gci/pip",
+	}
+	for key, want := range cacheVars {
+		if vars[key] != want {
+			t.Errorf("%s = %q, want %q", key, vars[key], want)
+		}
 	}
 	if vars["GCI_APP"] != "demo" || vars["GCI_JOB"] != "check" {
 		t.Fatalf("job identifiers = %#v", vars)

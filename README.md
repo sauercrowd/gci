@@ -65,15 +65,19 @@ Jobs can run in dependency order during deploy or explicitly with `gci run
 the deploy and is retried next time. Jobs stream output and return their exit
 code, making them suitable for CI. Jobs must be idempotent and backwards
 compatible. Job secrets are declared explicitly and are not inherited from
-services.
+services. Jobs share their image's build cache; services do not receive it.
 
 Services with volumes default to `restart = "manual"`: configuration changes
 remain pending until `gci deploy --restart <service>`. This flag applies pending
 changes and does not restart services whose revisions are already unchanged.
 
 Each image keeps its newest three releases plus releases still used by a
-service. Build cache volumes are per image; application volumes and secrets
-persist across deployments.
+service. Build steps and jobs share a persistent `gcicache-<app>-<image>` volume
+at `/var/cache/gci`, one per app and image; services do not receive the volume or
+its cache environment variables. Override a cache variable such as
+`XDG_CACHE_HOME` in image or job `env` to use another path. Only
+`gci rm --volumes` deletes caches. Application volumes and secrets persist
+across deployments.
 
 For Node.js projects use `npm install --no-audit --no-fund` in a dependency
 step, not `npm ci`.
