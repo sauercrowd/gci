@@ -32,6 +32,12 @@ type instance struct {
 	} `json:"state"`
 }
 
+type volumeInfo struct {
+	Name   string            `json:"name"`
+	Type   string            `json:"type"`
+	Config map[string]string `json:"config"`
+}
+
 func (i instance) IPv4() string {
 	if i.State == nil {
 		return ""
@@ -122,14 +128,94 @@ func exists(ctx context.Context, args ...string) bool {
 	return err == nil
 }
 
-func volumePool(ctx context.Context, hc *HostConfig, name string) (string, error) {
+func volumeOwnerClaim(name, app, owner string) (bool, error) {
+	if owner != "" && owner != app {
+		return false, fmt.Errorf("volume %s belongs to app %s", name, owner)
+	}
+	return owner == "", nil
+}
+
+func volumeInfoAt(ctx context.Context, pool, name string) (volumeInfo, error) {
+	out, err := incus(ctx, "query", fmt.Sprintf("/1.0/storage-pools/%s/volumes/custom/%s", pool, name))
+	if err != nil {
+		return volumeInfo{}, err
+	}
+	var volume volumeInfo
+	if err := json.Unmarshal([]byte(out), &volume); err != nil {
+		return volumeInfo{}, fmt.Errorf("parse volume %s: %w", name, err)
+	}
+	return volume, nil
+}
+
+func claimVolume(ctx context.Context, pool, name, app string) error {
+	volume, err := volumeInfoAt(ctx, pool, name)
+	if err != nil {
+		return fmt.Errorf("inspect volume %s: %w", name, err)
+	}
+	claim, err := volumeOwnerClaim(name, app, volume.Config["user.gci.app"])
+	if err != nil {
+		return err
+	}
+	if !claim {
+		return nil
+	}
+	if _, err := incus(ctx, "storage", "volume", "set", pool, name, "user.gci.app="+app); err != nil {
+		return fmt.Errorf("claim volume %s: %w", name, err)
+	}
+	return nil
+}
+
+func setVolumeConfig(ctx context.Context, pool, name, key, value string) error {
+	_, err := incus(ctx, "storage", "volume", "set", pool, name, key+"="+value)
+	return err
+}
+
+func listCustomVolumes(ctx context.Context, pool string) ([]volumeInfo, error) {
+	out, err := incus(ctx, "storage", "volume", "list", pool, "--format", "json")
+	var volumes []volumeInfo
+	if err == nil {
+		err = json.Unmarshal([]byte(out), &volumes)
+		if err == nil {
+			return customVolumes(volumes), nil
+		}
+	}
+	out, queryErr := incus(ctx, "query", fmt.Sprintf("/1.0/storage-pools/%s/volumes?recursion=1", pool))
+	if queryErr != nil {
+		return nil, fmt.Errorf("list volumes in pool %s (%v); query fallback: %w", pool, err, queryErr)
+	}
+	if err := json.Unmarshal([]byte(out), &volumes); err != nil {
+		return nil, fmt.Errorf("parse volumes in pool %s: %w", pool, err)
+	}
+	return customVolumes(volumes), nil
+}
+
+func customVolumes(volumes []volumeInfo) []volumeInfo {
+	custom := make([]volumeInfo, 0, len(volumes))
+	for _, volume := range volumes {
+		if volume.Type == "custom" {
+			custom = append(custom, volume)
+		}
+	}
+	return custom
+}
+
+func volumePool(ctx context.Context, hc *HostConfig, name, app string) (string, error) {
+	claimAndTag := func(pool string) error {
+		if err := claimVolume(ctx, pool, name, app); err != nil {
+			return err
+		}
+		return setVolumeConfig(ctx, pool, name, "user.gci.role", "data")
+	}
 	if exists(ctx, "storage", "volume", "show", hc.StoragePool, name) {
-		return hc.StoragePool, nil
+		return hc.StoragePool, claimAndTag(hc.StoragePool)
 	}
 	if hc.StoragePool != legacyPool && exists(ctx, "storage", "volume", "show", legacyPool, name) {
-		return legacyPool, nil
+		return legacyPool, claimAndTag(legacyPool)
 	}
 	if _, err := incus(ctx, "storage", "volume", "create", hc.StoragePool, name); err != nil {
+		return "", err
+	}
+	if err := claimAndTag(hc.StoragePool); err != nil {
 		return "", err
 	}
 	return hc.StoragePool, nil

@@ -198,7 +198,7 @@ func applyService(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.
 	vols := sortedKeys(svc.Volumes)
 	volPools := make(map[string]string, len(vols))
 	for _, vol := range vols {
-		pool, err := volumePool(ctx, hc, volumeName(app, vol))
+		pool, err := volumePool(ctx, hc, volumeName(app, vol), app)
 		if err != nil {
 			return fail(err)
 		}
