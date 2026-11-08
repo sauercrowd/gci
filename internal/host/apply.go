@@ -21,31 +21,31 @@ import (
 // Plan is what the CLI sends to the host agent for a deploy.
 type Plan struct {
 	Config  *config.Config    `json:"config"`
-	Sources map[string]string `json:"sources"` // service -> source content hash
+	Sources map[string]string `json:"sources"` // image -> source content hash
 	Clean   bool              `json:"clean,omitempty"`
 }
 
-// basePackages are added to every service env.
+// basePackages are added to every image env.
 var basePackages = []string{"cacert", "coreutils", "bashInteractive"}
 
 func unitName(svc string) string { return "gci-" + svc + ".service" }
 
 func volumeName(app, vol string) string { return "gci-" + app + "-" + vol }
 
-func profileLink(app, svc, suffix string) string {
-	return filepath.Join(appDir(app), "profiles", svc+suffix)
+func profileLink(app, image, suffix string) string {
+	return filepath.Join(appDir(app), "profiles", image+suffix)
 }
 
 // HasSource reports whether a source tree with this hash was already uploaded.
-func HasSource(app, svc, hash string) bool {
-	_, err := os.Stat(sourceDir(app, svc, hash))
+func HasSource(app, image, hash string) bool {
+	_, err := os.Stat(sourceDir(app, image, hash))
 	return err == nil
 }
 
 // ReceiveSource extracts a gzipped tarball into the content-addressed source dir.
-func ReceiveSource(app, svc, hash string, r io.Reader) error {
-	dst := sourceDir(app, svc, hash)
-	if HasSource(app, svc, hash) {
+func ReceiveSource(app, image, hash string, r io.Reader) error {
+	dst := sourceDir(app, image, hash)
+	if HasSource(app, image, hash) {
 		_, _ = io.Copy(io.Discard, r)
 		return nil
 	}
@@ -153,16 +153,18 @@ func Apply(ctx context.Context, w io.Writer, plan Plan) error {
 	if err != nil {
 		return err
 	}
-	for _, name := range order {
-		svc := cfg.Services[name]
-		if svc.Source != "" && (plan.Sources[name] == "" || !HasSource(cfg.App, name, plan.Sources[name])) {
-			return fmt.Errorf("%s: source %s was not uploaded", name, plan.Sources[name])
+	imageNames := cfg.ReferencedImages()
+	for _, imageName := range imageNames {
+		image := cfg.Images[imageName]
+		if image.Source != "" && (plan.Sources[imageName] == "" || !HasSource(cfg.App, imageName, plan.Sources[imageName])) {
+			return fmt.Errorf("%s: source %s was not uploaded", imageName, plan.Sources[imageName])
 		}
 	}
 
 	baseFP := ""
-	for _, name := range order {
-		if cfg.Services[name].Source != "" {
+	for _, imageName := range imageNames {
+		image := cfg.Images[imageName]
+		if image.Source != "" || len(image.Steps) > 0 {
 			baseFP, err = baseFingerprint(ctx)
 			if err != nil {
 				return err
@@ -170,26 +172,26 @@ func Apply(ctx context.Context, w io.Writer, plan Plan) error {
 			break
 		}
 	}
-	prepared := make(map[string]preparedService, len(order))
-	for _, name := range order {
-		svc := cfg.Services[name]
+	prepared := make(map[string]preparedImage, len(imageNames))
+	for _, imageName := range imageNames {
+		image := cfg.Images[imageName]
 		t := time.Now()
-		nextLink := profileLink(cfg.App, name, ".next")
-		env, err := buildEnv(ctx, cfg.Nixpkgs, "gci-"+cfg.App+"-"+name,
-			append(append([]string{}, svc.Packages...), basePackages...), nextLink)
+		nextLink := profileLink(cfg.App, imageName, ".next")
+		env, err := buildEnv(ctx, cfg.Nixpkgs, "gci-"+cfg.App+"-"+imageName,
+			append(append([]string{}, image.Packages...), basePackages...), nextLink)
 		_ = os.Remove(nextLink)
 		if err != nil {
-			return fmt.Errorf("%s: nix: %w", name, err)
+			return fmt.Errorf("%s: nix: %w", imageName, err)
 		}
-		fmt.Fprintf(w, "==> %s: env %s (%s)\n", name, filepath.Base(env), time.Since(t).Round(time.Millisecond))
-		item := preparedService{env: env}
-		if svc.Source != "" {
-			item.release, err = prepareRelease(ctx, w, hc, cfg, name, env, baseFP, plan.Sources[name], st, plan.Clean)
+		fmt.Fprintf(w, "==> %s: env %s (%s)\n", imageName, filepath.Base(env), time.Since(t).Round(time.Millisecond))
+		item := preparedImage{env: env}
+		if image.Source != "" || len(image.Steps) > 0 {
+			item.release, err = prepareRelease(ctx, w, hc, cfg, imageName, env, baseFP, plan.Sources[imageName], st, plan.Clean)
 			if err != nil {
-				return fmt.Errorf("%s: %w", name, err)
+				return fmt.Errorf("%s: %w", imageName, err)
 			}
 		}
-		prepared[name] = item
+		prepared[imageName] = item
 	}
 
 	var changed []string
@@ -197,7 +199,8 @@ func Apply(ctx context.Context, w io.Writer, plan Plan) error {
 		return err
 	}
 	for _, name := range order {
-		did, err := applyService(ctx, w, hc, cfg, name, plan.Sources[name], prepared[name], st)
+		imageName := cfg.Services[name].Image
+		did, err := applyService(ctx, w, hc, cfg, name, plan.Sources[imageName], prepared[imageName], st)
 		if err != nil {
 			return fmt.Errorf("%s: %w", name, err)
 		}
@@ -215,19 +218,27 @@ func Apply(ctx context.Context, w io.Writer, plan Plan) error {
 		}
 		fmt.Fprintf(w, "==> %s: removed from config, deleting %s (volumes kept)\n", name, s.Container)
 		_ = deleteInstance(ctx, s.Container)
-		delete(st.Services, name)
-		for _, rel := range st.Releases[name] {
-			_ = deleteInstance(ctx, rel.Instance)
-			_ = os.Remove(releaseRoot(cfg.App, name, rel.Key))
-		}
-		delete(st.Releases, name)
 		_ = os.Remove(profileLink(cfg.App, name, ""))
 		_ = os.Remove(profileLink(cfg.App, name, ".prev"))
+		delete(st.Services, name)
 	}
-	for name := range st.Releases {
-		if _, ok := cfg.Services[name]; !ok {
-			delete(st.Releases, name)
+	referenced := make(map[string]bool, len(imageNames))
+	for _, imageName := range imageNames {
+		referenced[imageName] = true
+	}
+	for imageName := range st.Releases {
+		if referenced[imageName] {
+			continue
 		}
+		for _, rel := range st.Releases[imageName] {
+			if err := deleteExistingInstance(ctx, rel.Instance); err != nil {
+				return err
+			}
+			if err := removeRoot(releaseRoot(cfg.App, imageName, rel.Key)); err != nil {
+				return err
+			}
+		}
+		delete(st.Releases, imageName)
 	}
 	if err := pruneAppReleases(ctx, st, 3); err != nil {
 		return err
@@ -255,25 +266,27 @@ func revision(cfg *config.Config, name, env, sourceHash string) string {
 
 func revisionWithRelease(cfg *config.Config, name, env, releaseKey string, releaseCreated time.Time) string {
 	svc := *cfg.Services[name]
-	svc.Source = ""
 	svc.Routes = nil // routing changes do not require a new container
+	image := cfg.Images[svc.Image]
 	raw, _ := json.Marshal(struct {
 		Svc            config.Service
+		Image          *config.Image
 		Env            string
 		Release        string
 		ReleaseCreated time.Time
 		Net            string
-	}{svc, env, releaseKey, releaseCreated, "release"})
+	}{svc, image, env, releaseKey, releaseCreated, "release"})
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:])[:12]
 }
 
-func applyService(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.Config, name, sourceHash string, prepared preparedService, st *AppState) (bool, error) {
+func applyService(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.Config, name, sourceHash string, prepared preparedImage, st *AppState) (bool, error) {
 	svc := cfg.Services[name]
+	image := cfg.Images[svc.Image]
 	app := cfg.App
 	logf := func(format string, a ...any) { fmt.Fprintf(w, "==> %s: "+format+"\n", append([]any{name}, a...)...) }
 
-	if svc.Source != "" && (sourceHash == "" || !HasSource(app, name, sourceHash)) {
+	if image.Source != "" && (sourceHash == "" || !HasSource(app, svc.Image, sourceHash)) {
 		return false, fmt.Errorf("source %s was not uploaded", sourceHash)
 	}
 
@@ -314,7 +327,7 @@ func applyService(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.
 	var args []string
 	if prepared.release != nil {
 		args = []string{"copy", prepared.release.Instance, container, "-s", hc.StoragePool,
-			"-c", "user.gci.role=service", "-c", "user.gci.rev=" + rev}
+			"-c", "user.gci.image=" + svc.Image, "-c", "user.gci.role=service", "-c", "user.gci.rev=" + rev}
 	} else {
 		args = []string{"init", baseImage, container, "--profile", profileName, "-s", hc.StoragePool,
 			"-c", "user.gci.app=" + app, "-c", "user.gci.service=" + name,
@@ -383,10 +396,10 @@ func applyService(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.
 	}
 	waitSystemd(ctx, container)
 
-	envVars := serviceEnvVars(app, name, svc, env)
+	envVars := serviceEnvVars(app, name, svc, image, env)
 	var pre []string
 	for _, vol := range vols {
-		pre = append(pre, fmt.Sprintf("+/bin/chown %s: %s", svc.User, svc.Volumes[vol]))
+		pre = append(pre, fmt.Sprintf("+/bin/chown %s: %s", image.User, svc.Volumes[vol]))
 	}
 	files := map[string]string{
 		"/etc/gci/service.env": renderEnvFile(envVars),
@@ -397,12 +410,12 @@ func applyService(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.
 		pre = append(pre, "/bin/sh /etc/gci/setup.sh")
 	}
 	workdir := envVars["HOME"]
-	if svc.Source != "" {
+	if image.Source != "" {
 		workdir = "/app"
 	}
 	files["/etc/systemd/system/"+unitName(name)] = renderUnit(unitSpec{
 		Description: fmt.Sprintf("gci %s/%s", app, name),
-		User:        svc.User,
+		User:        image.User,
 		EnvFile:     "/etc/gci/service.env",
 		WorkingDir:  workdir,
 		ExecPre:     pre,
@@ -423,7 +436,7 @@ func applyService(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.
 		return fail(err)
 	}
 	for _, vol := range vols {
-		if _, err := incus(ctx, "exec", container, "--", "/bin/chown", svc.User+":", svc.Volumes[vol]); err != nil {
+		if _, err := incus(ctx, "exec", container, "--", "/bin/chown", image.User+":", svc.Volumes[vol]); err != nil {
 			return fail(err)
 		}
 	}
@@ -461,7 +474,7 @@ func applyService(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.
 		return false, err
 	}
 	st.Services[name] = &ServiceState{
-		Container: container, IP: ip, VIP: vip, HTTP: svc.Health != "", Rev: rev, Env: env, Release: releaseKey,
+		Container: container, IP: ip, Image: svc.Image, VIP: vip, HTTP: svc.Health != "", Rev: rev, Env: env, Release: releaseKey,
 		Port: svc.Port, Routes: svc.Routes, Volumes: svc.Volumes,
 	}
 	if err := st.save(); err != nil {
@@ -481,19 +494,22 @@ func applyService(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.
 	return true, nil
 }
 
-func serviceEnvVars(app, name string, svc *config.Service, env string) map[string]string {
+func serviceEnvVars(app, name string, svc *config.Service, image *config.Image, env string) map[string]string {
 	vars := map[string]string{
 		"PATH":          env + "/bin:/usr/bin:/bin",
 		"SSL_CERT_FILE": env + "/etc/ssl/certs/ca-bundle.crt",
 		"GCI_APP":       app,
 		"GCI_SERVICE":   name,
-		"HOME":          "/home/gci",
+		"HOME":          "/home/" + image.User,
 	}
-	if svc.User == "root" {
+	if image.User == "root" {
 		vars["HOME"] = "/root"
 	}
 	if svc.Port != 0 {
 		vars["PORT"] = fmt.Sprint(svc.Port)
+	}
+	for key, value := range image.Env {
+		vars[key] = value
 	}
 	for key, value := range svc.Env {
 		vars[key] = value
@@ -560,27 +576,38 @@ func isLegacyDepsName(name, app string) bool {
 }
 
 func pruneAppReleases(ctx context.Context, st *AppState, keep int) error {
-	for name, rels := range st.Releases {
-		current := ""
-		if service := st.Services[name]; service != nil {
-			current = service.Release
-		}
-		kept, dropped := pruneReleases(rels, current, keep)
+	referenced := releaseReferences(st)
+	for imageName, rels := range st.Releases {
+		kept, dropped := pruneReleases(rels, referenced[imageName], keep)
 		for _, rel := range dropped {
 			if err := deleteExistingInstance(ctx, rel.Instance); err != nil {
 				return err
 			}
-			if err := removeRoot(releaseRoot(st.App, name, rel.Key)); err != nil {
+			if err := removeRoot(releaseRoot(st.App, imageName, rel.Key)); err != nil {
 				return err
 			}
 		}
 		if len(kept) == 0 {
-			delete(st.Releases, name)
+			delete(st.Releases, imageName)
 		} else {
-			st.Releases[name] = kept
+			st.Releases[imageName] = kept
 		}
 	}
 	return nil
+}
+
+func releaseReferences(st *AppState) map[string]map[string]bool {
+	referenced := map[string]map[string]bool{}
+	for _, service := range st.Services {
+		if service.Image == "" || service.Release == "" {
+			continue
+		}
+		if referenced[service.Image] == nil {
+			referenced[service.Image] = map[string]bool{}
+		}
+		referenced[service.Image][service.Release] = true
+	}
+	return referenced
 }
 
 func routesEqual(a, b []config.Route) bool {

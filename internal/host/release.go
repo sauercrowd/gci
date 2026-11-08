@@ -22,7 +22,7 @@ import (
 
 const buildTimeout = 30 * time.Minute
 
-type preparedService struct {
+type preparedImage struct {
 	env     string
 	release *Release
 }
@@ -60,40 +60,52 @@ func hashString(h hashWriter, value string) {
 	_, _ = io.WriteString(h, value)
 }
 
-func chainKey(baseFP, env, user, install, reuse, build string, serviceEnv map[string]string) string {
+func chainKey(baseFP, env, user string, imageEnv map[string]string, snapshotStep string, steps []config.Step) string {
 	h := sha256.New()
-	for _, value := range []string{baseFP, env, user, install, reuse} {
+	for _, value := range []string{baseFP, env, user} {
 		hashString(h, value)
 	}
-	if reuse == "build" {
-		hashString(h, build)
-		for _, key := range sortedKeys(serviceEnv) {
-			hashString(h, key)
-			hashString(h, serviceEnv[key])
+	for _, key := range sortedKeys(imageEnv) {
+		hashString(h, key)
+		hashString(h, imageEnv[key])
+	}
+	hashString(h, snapshotStep)
+	if snapshotStep != "" {
+		for _, step := range steps {
+			hashString(h, step.Name)
+			hashString(h, step.Run)
+			if step.Name == snapshotStep {
+				break
+			}
 		}
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-func releaseKey(chain, sourceHash, build string, serviceEnv map[string]string) string {
+func releaseKey(baseFP, env, user string, imageEnv map[string]string, sourceHash string, steps []config.Step) string {
 	h := sha256.New()
-	hashString(h, chain)
-	hashString(h, sourceHash)
-	hashString(h, build)
-	for _, key := range sortedKeys(serviceEnv) {
-		hashString(h, key)
-		hashString(h, serviceEnv[key])
+	for _, value := range []string{baseFP, env, user} {
+		hashString(h, value)
 	}
+	for _, key := range sortedKeys(imageEnv) {
+		hashString(h, key)
+		hashString(h, imageEnv[key])
+	}
+	for _, step := range steps {
+		hashString(h, step.Name)
+		hashString(h, step.Run)
+	}
+	hashString(h, sourceHash)
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-func buildStart(rels []*Release, key, reuse string, clean bool) (from string, fresh bool) {
-	if clean || reuse == "nothing" {
+func buildStart(rels []*Release, key, snapshotStep string, snapshotIsLast, clean bool) (from string, fresh bool) {
+	if clean || snapshotStep == "" {
 		return "", true
 	}
 	var newest *Release
 	for _, rel := range rels {
-		if rel.ChainKey != key || (reuse == "dependencies" && !rel.Installed) {
+		if rel.ChainKey != key || (!snapshotIsLast && !rel.HasStepSnapshot) {
 			continue
 		}
 		if newest == nil || rel.Created.After(newest.Created) {
@@ -103,70 +115,73 @@ func buildStart(rels []*Release, key, reuse string, clean bool) (from string, fr
 	if newest == nil {
 		return "", true
 	}
-	if reuse == "dependencies" {
-		return newest.Instance + "/installed", false
-	}
-	if reuse == "build" {
+	if snapshotIsLast {
 		return newest.Instance, false
 	}
-	return "", true
+	return newest.Instance + "/step", false
 }
 
-func releaseName(app, svc, key string) string {
-	return fmt.Sprintf("gci-%s-%s-r%s", app, svc, key[:7])
+func releaseName(app, image, key string) string {
+	return fmt.Sprintf("gci-%s-%s-r%s", app, image, key[:7])
 }
 
-func builderName(app, svc, key string) string {
-	return fmt.Sprintf("gci-%s-%s-x%s", app, svc, key[:7])
+func builderName(app, image, key string) string {
+	return fmt.Sprintf("gci-%s-%s-x%s", app, image, key[:7])
 }
 
-func prepareRelease(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.Config, name, env, baseFP, sourceHash string, st *AppState, clean bool) (*Release, error) {
-	svc := cfg.Services[name]
-	srcDir := sourceDir(cfg.App, name, sourceHash)
-	chain := chainKey(baseFP, env, svc.User, svc.Install, svc.Reuse, svc.Build, svc.Env)
-	key := releaseKey(chain, sourceHash, svc.Build, svc.Env)
-	instanceName := releaseName(cfg.App, name, key)
+func prepareRelease(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.Config, imageName, env, baseFP, sourceHash string, st *AppState, clean bool) (*Release, error) {
+	image := cfg.Images[imageName]
+	srcDir := ""
+	if image.Source != "" {
+		srcDir = sourceDir(cfg.App, imageName, sourceHash)
+	}
+	chain := chainKey(baseFP, env, image.User, image.Env, image.SnapshotStep, image.Steps)
+	key := releaseKey(baseFP, env, image.User, image.Env, sourceHash, image.Steps)
+	instanceName := releaseName(cfg.App, imageName, key)
+	snapshotIndex := stepIndex(image.Steps, image.SnapshotStep)
+	hasStepSnapshot := snapshotIndex >= 0 && snapshotIndex < len(image.Steps)-1
+	snapshotIsLast := snapshotIndex >= 0 && snapshotIndex == len(image.Steps)-1
 	var previous *Release
-	for _, existing := range st.Releases[name] {
+	for _, existing := range st.Releases[imageName] {
 		if existing.Key == key {
 			previous = existing
 			break
 		}
 	}
-	cached := exists(ctx, "info", instanceName) && !clean
+	cached := exists(ctx, "info", instanceName) && !clean && previous != nil && previous.ChainKey == chain
+	if hasStepSnapshot && (previous == nil || !previous.HasStepSnapshot) {
+		cached = false
+	}
 	created := time.Now().UTC()
-	installed := svc.Reuse == "dependencies"
 	if cached {
-		fmt.Fprintf(w, "==> %s: release cached (%s)\n", name, instanceName)
+		fmt.Fprintf(w, "==> %s: release cached (%s)\n", imageName, instanceName)
 		if previous != nil {
 			created = previous.Created
-			installed = previous.Installed
 		}
 	} else {
-		from, fresh := buildStart(st.Releases[name], chain, svc.Reuse, clean)
+		from, fresh := buildStart(st.Releases[imageName], chain, image.SnapshotStep, snapshotIsLast, clean)
 		if fresh {
-			fmt.Fprintf(w, "==> %s: building from base image\n", name)
+			fmt.Fprintf(w, "==> %s: building from base image\n", imageName)
 		} else {
-			fmt.Fprintf(w, "==> %s: building from %s\n", name, from)
+			fmt.Fprintf(w, "==> %s: building from %s\n", imageName, from)
 		}
-		if err := buildRelease(ctx, w, hc, cfg, name, env, key, srcDir, from); err != nil {
+		if err := buildRelease(ctx, w, hc, cfg, imageName, env, key, srcDir, from, snapshotIndex, hasStepSnapshot); err != nil {
 			return nil, err
 		}
-		installed = svc.Reuse == "dependencies"
 	}
 
-	rel := &Release{Key: key, ChainKey: chain, Instance: instanceName, Installed: installed, Env: env, Source: sourceHash, Created: created}
+	rel := &Release{Key: key, ChainKey: chain, Instance: instanceName, HasStepSnapshot: hasStepSnapshot, Env: env, Source: sourceHash, Created: created}
 	if !cached {
 		rel.Created = time.Now().UTC()
 	}
-	rels := st.Releases[name][:0]
-	for _, existing := range st.Releases[name] {
+	rels := st.Releases[imageName][:0]
+	for _, existing := range st.Releases[imageName] {
 		if existing.Key != key {
 			rels = append(rels, existing)
 		}
 	}
-	st.Releases[name] = append(rels, rel)
-	if err := addRoot(ctx, env, releaseRoot(cfg.App, name, key)); err != nil {
+	st.Releases[imageName] = append(rels, rel)
+	if err := addRoot(ctx, env, releaseRoot(cfg.App, imageName, key)); err != nil {
 		return nil, err
 	}
 	if err := st.save(); err != nil {
@@ -175,14 +190,23 @@ func prepareRelease(ctx context.Context, w io.Writer, hc *HostConfig, cfg *confi
 	return rel, nil
 }
 
-func buildRelease(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.Config, svcName, env, key, srcDir, from string) error {
-	svc := cfg.Services[svcName]
-	builder := builderName(cfg.App, svcName, key)
-	final := releaseName(cfg.App, svcName, key)
+func stepIndex(steps []config.Step, name string) int {
+	for i, step := range steps {
+		if step.Name == name && name != "" {
+			return i
+		}
+	}
+	return -1
+}
+
+func buildRelease(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.Config, imageName, env, key, srcDir, from string, snapshotIndex int, hasStepSnapshot bool) error {
+	image := cfg.Images[imageName]
+	builder := builderName(cfg.App, imageName, key)
+	final := releaseName(cfg.App, imageName, key)
 	_ = deleteInstance(ctx, builder)
 	if from != "" {
 		if _, err := incus(ctx, "copy", from, builder, "-s", hc.StoragePool,
-			"-c", "user.gci.role=build"); err != nil {
+			"-c", "user.gci.app="+cfg.App, "-c", "user.gci.image="+imageName, "-c", "user.gci.role=build"); err != nil {
 			_ = deleteInstance(ctx, builder)
 			return err
 		}
@@ -192,7 +216,7 @@ func buildRelease(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.
 		}
 	} else {
 		if _, err := incus(ctx, "init", baseImage, builder, "--profile", profileName, "-s", hc.StoragePool,
-			"-c", "user.gci.app="+cfg.App, "-c", "user.gci.service="+svcName, "-c", "user.gci.role=build"); err != nil {
+			"-c", "user.gci.app="+cfg.App, "-c", "user.gci.image="+imageName, "-c", "user.gci.role=build"); err != nil {
 			_ = deleteInstance(ctx, builder)
 			return err
 		}
@@ -201,7 +225,7 @@ func buildRelease(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.
 		_ = deleteInstance(ctx, builder)
 		return err
 	}
-	cacheName := cacheVolumeName(cfg.App, svcName)
+	cacheName := cacheVolumeName(cfg.App, imageName)
 	if err := ensureCacheVolume(ctx, hc, cacheName); err != nil {
 		return fail(err)
 	}
@@ -216,7 +240,7 @@ func buildRelease(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.
 		return fail(err)
 	}
 	waitSystemd(ctx, builder)
-	uid, gid, err := builderIDs(ctx, builder, svc.User)
+	uid, gid, err := builderIDs(ctx, builder, image.User)
 	if err != nil {
 		return fail(err)
 	}
@@ -230,32 +254,27 @@ func buildRelease(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.
 	if _, err := incus(ctx, "exec", builder, "--", "chown", "-R", uid+":"+gid, "/app"); err != nil {
 		return fail(err)
 	}
-	buildEnv := baseBuildEnv(env, cfg.App, svcName, svc.User)
-	if svc.Install != "" {
-		fmt.Fprintf(w, "==> %s: installing dependencies\n", svcName)
-		if err := runBuildCommand(ctx, w, builder, uid, gid, buildEnv, svc.Install); err != nil {
+	buildEnv := imageBuildEnv(env, cfg.App, imageName, image)
+	for i, step := range image.Steps {
+		stepName := step.Name
+		if stepName == "" {
+			stepName = fmt.Sprint(i + 1)
+		}
+		fmt.Fprintf(w, "==> %s: step %s\n", imageName, stepName)
+		if err := runBuildCommand(ctx, w, builder, uid, gid, buildEnv, step.Run); err != nil {
 			return fail(err)
 		}
-	}
-	if svc.Reuse == "dependencies" {
-		if _, err := incus(ctx, "config", "device", "remove", builder, "cache"); err != nil {
-			return fail(err)
-		}
-		if _, err := incus(ctx, "snapshot", "create", builder, "installed"); err != nil {
-			return fail(err)
-		}
-		if _, err := incus(ctx, "config", "device", "add", builder, "cache", "disk",
-			"pool="+hc.StoragePool, "source="+cacheName, "path=/var/cache/gci"); err != nil {
-			return fail(err)
-		}
-	}
-	if svc.Build != "" {
-		fmt.Fprintf(w, "==> %s: building source\n", svcName)
-		for k, v := range svc.Env {
-			buildEnv[k] = v
-		}
-		if err := runBuildCommand(ctx, w, builder, uid, gid, buildEnv, svc.Build); err != nil {
-			return fail(err)
+		if i == snapshotIndex && hasStepSnapshot {
+			if _, err := incus(ctx, "config", "device", "remove", builder, "cache"); err != nil {
+				return fail(err)
+			}
+			if _, err := incus(ctx, "snapshot", "create", builder, "step"); err != nil {
+				return fail(err)
+			}
+			if _, err := incus(ctx, "config", "device", "add", builder, "cache", "disk",
+				"pool="+hc.StoragePool, "source="+cacheName, "path=/var/cache/gci"); err != nil {
+				return fail(err)
+			}
 		}
 	}
 	if _, err := incus(ctx, "config", "device", "remove", builder, "cache"); err != nil {
@@ -278,6 +297,10 @@ func buildRelease(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.
 		_ = deleteInstance(ctx, final)
 		return err
 	}
+	if _, err := incus(ctx, "config", "set", final, "user.gci.image", imageName); err != nil {
+		_ = deleteInstance(ctx, final)
+		return err
+	}
 	return nil
 }
 
@@ -293,7 +316,7 @@ func builderIDs(ctx context.Context, builder, user string) (string, string, erro
 	return strings.TrimSpace(uid), strings.TrimSpace(gid), nil
 }
 
-func baseBuildEnv(env, app, svc, user string) map[string]string {
+func baseBuildEnv(env, app, image, user string) map[string]string {
 	home := "/home/" + user
 	if user == "root" {
 		home = "/root"
@@ -304,7 +327,7 @@ func baseBuildEnv(env, app, svc, user string) map[string]string {
 		"SSL_CERT_FILE":        env + "/etc/ssl/certs/ca-bundle.crt",
 		"NIX_SSL_CERT_FILE":    env + "/etc/ssl/certs/ca-bundle.crt",
 		"GCI_APP":              app,
-		"GCI_SERVICE":          svc,
+		"GCI_IMAGE":            image,
 		"XDG_CACHE_HOME":       "/var/cache/gci",
 		"npm_config_cache":     "/var/cache/gci/npm",
 		"npm_config_store_dir": "/var/cache/gci/pnpm",
@@ -313,6 +336,14 @@ func baseBuildEnv(env, app, svc, user string) map[string]string {
 		"UV_LINK_MODE":         "copy",
 		"PIP_CACHE_DIR":        "/var/cache/gci/pip",
 	}
+}
+
+func imageBuildEnv(env, app, imageName string, image *config.Image) map[string]string {
+	vars := baseBuildEnv(env, app, imageName, image.User)
+	for key, value := range image.Env {
+		vars[key] = value
+	}
+	return vars
 }
 
 func runBuildCommand(ctx context.Context, w io.Writer, container, uid, gid string, vars map[string]string, command string) error {
@@ -346,7 +377,7 @@ func ensureCacheVolume(ctx context.Context, hc *HostConfig, name string) error {
 	return err
 }
 
-func cacheVolumeName(app, svc string) string { return "gcicache-" + app + "-" + svc }
+func cacheVolumeName(app, image string) string { return "gcicache-" + app + "-" + image }
 
 func deleteExistingInstance(ctx context.Context, name string) error {
 	inst, err := getInstance(ctx, name)
@@ -493,9 +524,12 @@ func syncReleaseSource(ctx context.Context, w io.Writer, container, root string)
 			return fmt.Errorf("parse source manifest: %w", err)
 		}
 	}
-	current, err := sourceManifest(root)
-	if err != nil {
-		return err
+	var current []sourceManifestEntry
+	if root != "" {
+		current, err = sourceManifest(root)
+		if err != nil {
+			return err
+		}
 	}
 	removed, replaced, err := sourceManifestDiff(old, current)
 	if err != nil {
@@ -510,8 +544,10 @@ func syncReleaseSource(ctx context.Context, w io.Writer, container, root string)
 			return err
 		}
 	}
-	if err := streamTarToInstance(ctx, w, container, root); err != nil {
-		return err
+	if root != "" {
+		if err := streamTarToInstance(ctx, w, container, root); err != nil {
+			return err
+		}
 	}
 	raw, err := json.Marshal(sourceManifestDocument{Version: 2, Entries: current})
 	if err != nil {
@@ -669,19 +705,19 @@ func runStreamInput(ctx context.Context, w io.Writer, stdin io.Reader, name stri
 	return nil
 }
 
-func pruneReleases(rels []*Release, current string, keep int) (kept, dropped []*Release) {
-	if keep <= 0 {
-		return nil, append([]*Release(nil), rels...)
-	}
-	selected := map[string]bool{}
+func pruneReleases(rels []*Release, referenced map[string]bool, keep int) (kept, dropped []*Release) {
+	selected := make(map[string]bool, len(referenced)+keep)
 	for _, rel := range rels {
-		if rel.Key == current {
+		if referenced[rel.Key] {
 			selected[rel.Key] = true
-			break
 		}
 	}
-	for i := len(rels) - 1; i >= 0 && len(selected) < keep; i-- {
-		selected[rels[i].Key] = true
+	newest := append([]*Release(nil), rels...)
+	sort.SliceStable(newest, func(i, j int) bool {
+		return newest[i].Created.After(newest[j].Created)
+	})
+	for i := 0; i < len(newest) && i < keep; i++ {
+		selected[newest[i].Key] = true
 	}
 	for _, rel := range rels {
 		if selected[rel.Key] {

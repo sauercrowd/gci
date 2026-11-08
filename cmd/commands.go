@@ -82,21 +82,21 @@ func init() {
 			}
 			defer h.Close()
 			plan := host.Plan{Config: cfg, Sources: map[string]string{}, Clean: clean || cleanEnabled(os.Getenv("GCI_CLEAN"))}
-			for _, name := range sortedNames(cfg) {
-				svc := cfg.Services[name]
-				if svc.Source == "" {
+			for _, imageName := range cfg.ReferencedImages() {
+				image := cfg.Images[imageName]
+				if image.Source == "" {
 					continue
 				}
-				tarball, hash, err := remote.PackSource(svc.Source)
+				tarball, hash, err := remote.PackSource(image.Source)
 				if err != nil {
-					return fmt.Errorf("%s: pack %s: %w", name, svc.Source, err)
+					return fmt.Errorf("%s: pack %s: %w", imageName, image.Source, err)
 				}
-				plan.Sources[name] = hash
-				if h.Agent(cmd.Context(), []string{"has-source", cfg.App, name, hash}, nil, io.Discard, io.Discard) == nil {
+				plan.Sources[imageName] = hash
+				if h.Agent(cmd.Context(), []string{"has-source", cfg.App, imageName, hash}, nil, io.Discard, io.Discard) == nil {
 					continue
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "==> %s: uploading source %s (%d KiB)\n", name, hash, len(tarball)/1024)
-				if err := h.Agent(cmd.Context(), []string{"receive-source", cfg.App, name, hash}, bytes.NewReader(tarball), cmd.OutOrStdout(), cmd.ErrOrStderr()); err != nil {
+				fmt.Fprintf(cmd.OutOrStdout(), "==> %s: uploading source %s (%d KiB)\n", imageName, hash, len(tarball)/1024)
+				if err := h.Agent(cmd.Context(), []string{"receive-source", cfg.App, imageName, hash}, bytes.NewReader(tarball), cmd.OutOrStdout(), cmd.ErrOrStderr()); err != nil {
 					return err
 				}
 			}
@@ -107,7 +107,7 @@ func init() {
 			return h.Agent(cmd.Context(), []string{"apply"}, bytes.NewReader(raw), cmd.OutOrStdout(), cmd.ErrOrStderr())
 		},
 	}
-	deploy.Flags().BoolVar(&clean, "clean", false, "rebuild source services from a fresh base")
+	deploy.Flags().BoolVar(&clean, "clean", false, "rebuild images from a fresh base")
 
 	status := &cobra.Command{
 		Use:   "status",
