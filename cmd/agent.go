@@ -42,7 +42,7 @@ func init() {
 	}
 
 	hasSource := &cobra.Command{
-		Use:  "has-source <app> <service> <hash>",
+		Use:  "has-source <app> <image> <hash>",
 		Args: cobra.ExactArgs(3),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !host.HasSource(args[0], args[1], args[2]) {
@@ -53,7 +53,7 @@ func init() {
 	}
 
 	receive := &cobra.Command{
-		Use:  "receive-source <app> <service> <hash>",
+		Use:  "receive-source <app> <image> <hash>",
 		Args: cobra.ExactArgs(3),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return host.ReceiveSource(args[0], args[1], args[2], os.Stdin)

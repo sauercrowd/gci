@@ -14,6 +14,7 @@ const migrationTimeout = 10 * time.Minute
 
 func runMigration(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.Config, name, env string, prepared preparedService, rev string) (retErr error) {
 	svc := cfg.Services[name]
+	image := cfg.Images[svc.Image]
 	key := rev
 	if len(key) > 7 {
 		key = key[:7]
@@ -72,15 +73,15 @@ func runMigration(ctx context.Context, w io.Writer, hc *HostConfig, cfg *config.
 	}
 	_, _ = incus(ctx, "exec", container, "--", "systemctl", "try-restart", "systemd-resolved")
 	if err := pushFile(ctx, container, "/etc/gci/service.env",
-		renderEnvFile(serviceEnvVars(cfg.App, name, svc, env, prepared.secrets)), "0600"); err != nil {
+		renderEnvFile(serviceEnvVars(cfg.App, name, svc, image, env, prepared.secrets)), "0600"); err != nil {
 		return err
 	}
 
-	return execMigration(ctx, w, container, name, svc, rev, prepared.secrets)
+	return execMigration(ctx, w, container, name, svc, image, rev, prepared.secrets)
 }
 
-func execMigration(ctx context.Context, w io.Writer, container, name string, svc *config.Service, rev string, secrets map[string]string) error {
-	args, unit := migrationCommandArgs(container, svc.User, rev, svc.Migrate)
+func execMigration(ctx context.Context, w io.Writer, container, name string, svc *config.Service, image *config.Image, rev string, secrets map[string]string) error {
+	args, unit := migrationCommandArgs(container, image.User, image.Source != "", rev, svc.Migrate)
 	migrationCtx, cancel := context.WithTimeout(ctx, migrationTimeout)
 	output := &cappedHealthWriter{limit: maxHealthCommandOutput + maxSecretSize}
 	cmd := exec.CommandContext(migrationCtx, "incus", args...)
@@ -104,15 +105,19 @@ func execMigration(ctx context.Context, w io.Writer, container, name string, svc
 	return nil
 }
 
-func migrationCommandArgs(container, user, revision, command string) ([]string, string) {
+func migrationCommandArgs(container, user string, hasSource bool, revision, command string) ([]string, string) {
 	key := revision
 	if len(key) > 7 {
 		key = key[:7]
 	}
 	unit := "gci-migrate-" + key
+	workdir := "/home/" + user
+	if hasSource {
+		workdir = "/app"
+	}
 	args := []string{"exec", container, "--", "systemd-run", "--unit", unit, "--wait", "--pipe", "--quiet", "--collect",
 		"-p", "RuntimeMaxSec=600",
-		"-p", "User=" + user, "-p", "EnvironmentFile=/etc/gci/service.env", "-p", "WorkingDirectory=/app",
+		"-p", "User=" + user, "-p", "EnvironmentFile=/etc/gci/service.env", "-p", "WorkingDirectory=" + workdir,
 		"/bin/sh", "-e", "-c", command}
 	return args, unit
 }

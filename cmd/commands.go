@@ -83,23 +83,23 @@ func init() {
 			defer h.Close()
 			ctx := cmd.Context()
 			plan := host.Plan{Config: cfg, Sources: map[string]string{}, Clean: clean || cleanEnabled(os.Getenv("GCI_CLEAN"))}
-			for _, name := range sortedNames(cfg) {
-				svc := cfg.Services[name]
-				if svc.Source == "" {
+			for _, imageName := range cfg.ReferencedImages() {
+				image := cfg.Images[imageName]
+				if image.Source == "" {
 					continue
 				}
-				tarball, hash, err := remote.PackSource(svc.Source)
+				tarball, hash, err := remote.PackSource(image.Source)
 				if err != nil {
-					return fmt.Errorf("%s: pack %s: %w", name, svc.Source, err)
+					return fmt.Errorf("%s: pack %s: %w", imageName, image.Source, err)
 				}
-				plan.Sources[name] = hash
+				plan.Sources[imageName] = hash
 				var out bytes.Buffer
-				if err := h.Agent(ctx, []string{"has-source", cfg.App, name, hash}, nil, &out, io.Discard); err == nil {
+				if err := h.Agent(ctx, []string{"has-source", cfg.App, imageName, hash}, nil, &out, io.Discard); err == nil {
 					continue
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "==> %s: uploading source %s (%d KiB)\n", name, hash, len(tarball)/1024)
-				if err := h.Agent(ctx, []string{"receive-source", cfg.App, name, hash}, bytes.NewReader(tarball), cmd.OutOrStdout(), cmd.ErrOrStderr()); err != nil {
-					return fmt.Errorf("%s: upload source: %w", name, err)
+				fmt.Fprintf(cmd.OutOrStdout(), "==> %s: uploading source %s (%d KiB)\n", imageName, hash, len(tarball)/1024)
+				if err := h.Agent(ctx, []string{"receive-source", cfg.App, imageName, hash}, bytes.NewReader(tarball), cmd.OutOrStdout(), cmd.ErrOrStderr()); err != nil {
+					return fmt.Errorf("%s: upload source: %w", imageName, err)
 				}
 			}
 			raw, err := json.Marshal(plan)
@@ -109,7 +109,7 @@ func init() {
 			return h.Agent(ctx, []string{"apply"}, bytes.NewReader(raw), cmd.OutOrStdout(), cmd.ErrOrStderr())
 		},
 	}
-	deploy.Flags().BoolVar(&clean, "clean", false, "rebuild source services from a fresh base")
+	deploy.Flags().BoolVar(&clean, "clean", false, "rebuild images from a fresh base")
 
 	status := &cobra.Command{
 		Use:   "status",

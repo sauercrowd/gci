@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sauercrowd/gci/internal/config"
 )
@@ -52,7 +53,13 @@ func TestEnvoyResources(t *testing.T) {
 }
 
 func TestRevisionIgnoresRoutes(t *testing.T) {
-	cfg := &config.Config{App: "a", Services: map[string]*config.Service{"web": {Command: "x", Port: 1}}}
+	cfg := &config.Config{
+		App:    "a",
+		Images: map[string]*config.Image{"app": {User: "gci"}},
+		Services: map[string]*config.Service{
+			"web": {Image: "app", Command: "x", Port: 1},
+		},
+	}
 	r1 := revision(cfg, "web", "/nix/store/env", "src1")
 	cfg.Services["web"].Routes = []config.Route{{Host: "*", Prefix: "/"}}
 	if r2 := revision(cfg, "web", "/nix/store/env", "src1"); r1 != r2 {
@@ -64,14 +71,22 @@ func TestRevisionIgnoresRoutes(t *testing.T) {
 	if r4 := revision(cfg, "web", "/nix/store/other", "src1"); r1 == r4 {
 		t.Errorf("env change did not change revision")
 	}
+	cfg.Images["app"].Env = map[string]string{"MODE": "production"}
+	if r5 := revision(cfg, "web", "/nix/store/env", "src1"); r1 == r5 {
+		t.Errorf("image env change did not change revision")
+	}
 }
 
 func TestSecretRevisionScope(t *testing.T) {
 	useTestSecretRoot(t)
-	cfg := &config.Config{App: "a", Services: map[string]*config.Service{
-		"web": {Command: "run", Secrets: map[string]string{"SESSION_SECRET": "session-secret"}},
-		"db":  {Command: "db", Secrets: map[string]string{"PASSWORD": "db-password"}},
-	}}
+	cfg := &config.Config{
+		App:    "a",
+		Images: map[string]*config.Image{"app": {User: "gci"}},
+		Services: map[string]*config.Service{
+			"web": {Image: "app", Command: "run", Secrets: map[string]string{"SESSION_SECRET": "session-secret"}},
+			"db":  {Image: "app", Command: "db", Secrets: map[string]string{"PASSWORD": "db-password"}},
+		},
+	}
 	digest := func(values map[string]string) string {
 		t.Helper()
 		got, err := secretDigest(values)
@@ -188,14 +203,54 @@ func useTestSecretRoot(t *testing.T) {
 	t.Cleanup(func() { secretRoot = previous })
 }
 
+func TestRevisionIgnoresImageSourcePath(t *testing.T) {
+	newConfig := func(source string) *config.Config {
+		return &config.Config{
+			App:    "a",
+			Images: map[string]*config.Image{"app": {User: "gci", Source: source}},
+			Services: map[string]*config.Service{
+				"web": {Image: "app", Command: "x"},
+			},
+		}
+	}
+	r1 := revision(newConfig("/checkout/one"), "web", "/nix/store/env", "source-hash")
+	r2 := revision(newConfig("/checkout/two"), "web", "/nix/store/env", "source-hash")
+	if r1 != r2 {
+		t.Fatalf("image source path changed revision: %q != %q", r1, r2)
+	}
+}
+
 func TestPruneReleases(t *testing.T) {
-	rels := []*Release{{Key: "one"}, {Key: "two"}, {Key: "three"}, {Key: "four"}}
-	kept, dropped := pruneReleases(rels, "one", 3)
-	if len(kept) != 3 || kept[0].Key != "one" || kept[1].Key != "three" || kept[2].Key != "four" {
+	now := time.Now()
+	rels := []*Release{
+		{Key: "one", Created: now},
+		{Key: "two", Created: now.Add(time.Minute)},
+		{Key: "three", Created: now.Add(2 * time.Minute)},
+		{Key: "four", Created: now.Add(3 * time.Minute)},
+		{Key: "five", Created: now.Add(4 * time.Minute)},
+	}
+	referenced := releaseReferences(&AppState{Services: map[string]*ServiceState{
+		"web": {Image: "app", Release: "one"},
+	}})
+	if !referenced["app"]["one"] || referenced["other"] != nil {
+		t.Fatalf("release references = %#v", referenced)
+	}
+	kept, dropped := pruneReleases(rels, referenced["app"], 3)
+	if len(kept) != 4 || kept[0].Key != "one" || kept[1].Key != "three" || kept[2].Key != "four" || kept[3].Key != "five" {
 		t.Fatalf("kept = %#v", kept)
 	}
 	if len(dropped) != 1 || dropped[0].Key != "two" {
 		t.Fatalf("dropped = %#v", dropped)
+	}
+}
+
+func TestServiceEnvInheritsImageEnv(t *testing.T) {
+	vars := serviceEnvVars("app", "web",
+		&config.Service{Image: "app", Command: "run", Env: map[string]string{"SHARED": "service"}},
+		&config.Image{User: "root", Env: map[string]string{"IMAGE_ONLY": "image", "SHARED": "image"}},
+		"/nix/store/env", nil)
+	if vars["IMAGE_ONLY"] != "image" || vars["SHARED"] != "service" || vars["HOME"] != "/root" {
+		t.Fatalf("runtime vars = %#v", vars)
 	}
 }
 

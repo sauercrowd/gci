@@ -1,8 +1,16 @@
 # Postgres + ClickHouse + a Python app (API + static frontend) behind Envoy.
 app = "platform"
 
-[services.postgres]
+[images.postgres]
 packages = ["postgresql_16"]
+[images.clickhouse]
+packages = ["clickhouse"]
+[images.web]
+packages = ["python3.withPackages (p: [ p.psycopg ])"]
+source = "./app"
+
+[services.postgres]
+image = "postgres"
 volumes = { pgdata = "/var/lib/postgresql" }
 env = { PGDATA = "/var/lib/postgresql/16" }
 secrets = { POSTGRES_PASSWORD = "postgres-password" }
@@ -21,7 +29,7 @@ health_command = "pg_isready -h 127.0.0.1 -p 5432 -U postgres"
 memory = "1GiB"
 
 [services.clickhouse]
-packages = ["clickhouse"]
+image = "clickhouse"
 volumes = { chdata = "/var/lib/clickhouse" }
 command = "clickhouse server -- --path=/var/lib/clickhouse/ --listen_host=0.0.0.0"
 port = 8123
@@ -29,8 +37,7 @@ health = "/ping"
 memory = "2GiB"
 
 [services.web]
-packages = ["python3.withPackages (p: [ p.psycopg ])"]
-source = "./app"
+image = "web"
 command = "python3 server.py"
 port = 8080
 health = "/healthz"
