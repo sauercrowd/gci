@@ -6,7 +6,7 @@ import (
 )
 
 func TestMigrationCommandArgs(t *testing.T) {
-	args, unit := migrationCommandArgs("gci-demo-web-m1234567", "gci", "123456789abcd", "db:migrate")
+	args, unit := migrationCommandArgs("gci-demo-web-m1234567", "gci", true, "123456789abcd", "db:migrate")
 	if unit != "gci-migrate-1234567" {
 		t.Fatalf("unit = %q", unit)
 	}
@@ -21,5 +21,12 @@ func TestMigrationCommandArgs(t *testing.T) {
 		if !strings.Contains(joined, want) {
 			t.Errorf("args %q do not include %q", joined, want)
 		}
+	}
+}
+
+func TestMigrationCommandWithoutSourceUsesHomeDirectory(t *testing.T) {
+	args, _ := migrationCommandArgs("gci-demo-web-m1234567", "gci", false, "123456789abcd", "db:migrate")
+	if joined := strings.Join(args, " "); !strings.Contains(joined, "WorkingDirectory=/home/gci") {
+		t.Fatalf("args %q do not use the image user's home directory", joined)
 	}
 }
