@@ -80,6 +80,20 @@ func fallback(value string) string {
 	return value
 }
 
+func volumesToDelete(app string, volumes []volumeInfo, legacy map[string]bool) []string {
+	selected := make(map[string]bool)
+	for _, volume := range volumes {
+		if volume.Type != "custom" {
+			continue
+		}
+		owner := volume.Config["user.gci.app"]
+		if owner == app || (owner == "" && legacy[volume.Name]) {
+			selected[volume.Name] = true
+		}
+	}
+	return sortedKeys(selected)
+}
+
 func Logs(ctx context.Context, w io.Writer, app, svc string, lines int, follow bool) error {
 	st, err := loadState(app)
 	if err != nil {
@@ -132,18 +146,24 @@ func Remove(ctx context.Context, w io.Writer, app string, volumes bool) error {
 		if hc.StoragePool != legacyPool {
 			pools = append(pools, legacyPool)
 		}
+		legacy := make(map[string]bool)
+		for _, service := range st.Services {
+			for volume := range service.Volumes {
+				legacy[volumeName(app, volume)] = true
+			}
+		}
+		for image := range st.Releases {
+			legacy[cacheVolumeName(app, image)] = true
+		}
 		for _, pool := range pools {
-			out, err := incus(ctx, "storage", "volume", "list", pool, "--format", "csv", "-c", "n", "type=custom")
+			volumes, err := listCustomVolumes(ctx, pool)
 			if err != nil {
 				return err
 			}
-			for _, line := range strings.Split(out, "\n") {
-				v := strings.TrimSpace(line)
-				if strings.HasPrefix(v, "gci-"+app+"-") || strings.HasPrefix(v, "gcicache-"+app+"-") {
-					fmt.Fprintf(w, "deleting volume %s (%s)\n", v, pool)
-					if _, err := incus(ctx, "storage", "volume", "delete", pool, v); err != nil {
-						return err
-					}
+			for _, volume := range volumesToDelete(app, volumes, legacy) {
+				fmt.Fprintf(w, "deleting volume %s (%s)\n", volume, pool)
+				if _, err := incus(ctx, "storage", "volume", "delete", pool, volume); err != nil {
+					return err
 				}
 			}
 		}
