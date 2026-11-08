@@ -60,11 +60,12 @@ carries generated output forward and may leave stale artifacts; use an earlier
 dependency step when outputs should be recreated. `gci deploy --clean` or
 `GCI_CLEAN=1` forces a fresh base.
 
-Services can use `migrate` before activation. Stateless migrations run in a
-temporary copy while the old version serves; stateful migrations run with the
-volume attached after the old service stops. Envoy switches to a healthy
-replacement before the old stateless container is removed. Secrets are injected
-at runtime and are never part of image builds.
+Jobs can run in dependency order during deploy or explicitly with `gci run
+<job>`. Deploy jobs rerun only when their revision changes; a failure aborts
+the deploy and is retried next time. Jobs stream output and return their exit
+code, making them suitable for CI. Jobs must be idempotent and backwards
+compatible. Job secrets are declared explicitly and are not inherited from
+services.
 
 Services with volumes default to `restart = "manual"`: configuration changes
 remain pending until `gci deploy --restart <service>`. This flag applies pending

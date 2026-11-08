@@ -8,7 +8,8 @@ Global flags: `-c/--config` (default `gci.toml`) and `-s/--server` (default: `se
 | `gci server add <name> --host h[:port] [-u user] [-i key]` | Register an SSH host in `~/.gci/servers.toml`. Use `--local` to target this machine directly. |
 | `gci server ls` / `gci server rm <name>` | List or remove registered hosts. |
 | `gci bootstrap [--http-port 80] [--https-port 443] [--subnet ADDRESS/CIDR] [--vip-range 10.77.1.0/24] [--storage-size 50GiB] [--acme-email EMAIL] [--acme-directory URL] [--acme-ca-bundle PATH]` | Prepare a host once, including the btrfs-backed `gci` storage pool, HTTPS listener, and certificate-renewal timer. An omitted subnet reuses the existing bridge address or defaults to `10.77.0.1/24`; changing an existing bridge subnet is unsupported (see [Installation](/installation/)). |
-| `gci deploy [--clean] [--restart <service>]` | Upload changed image sources, realize Nix envs, and roll changed services. `--clean` forces image builds to start from a fresh base; the equivalent environment setting is `GCI_CLEAN=1`, `true`, or `yes`. Repeat `--restart` (or pass comma-separated names) to apply pending changes to manual services; unchanged services are not restarted. |
+| `gci deploy [--clean] [--restart <service>]` | Upload changed image sources, realize Nix envs, run deploy jobs, and roll changed services. `--clean` forces image builds to start from a fresh base; the equivalent environment setting is `GCI_CLEAN=1`, `true`, or `yes`. Repeat `--restart` (or pass comma-separated names) to apply pending changes to manual services; unchanged services are not restarted. |
+| `gci run <job> [--clean]` | Run only the named job, stream its output, and return its exit code. Dependencies are not run; volume jobs can run only during their owning service's rollout. `--clean` or `GCI_CLEAN=1` forces a fresh-base image build. |
 | `gci status` | Show each service's container state, unit state, IP, port, and revision, plus TLS certificate mode, source, issuer, and expiry for the app's routed hosts. |
 | `gci logs <service> [-n 100] [-f]` | Show a service's journal. |
 | `gci rm [--volumes]` | Remove all of the app's containers and routes. Volumes and caches are kept unless `--volumes` is passed; host secrets are kept. |
@@ -20,6 +21,13 @@ The first time a command runs against a host, gci uploads itself to `/usr/local/
 
 When `gci secret set` reads from a terminal, enter the value and finish with Ctrl-D. For non-interactive use, pipe the value on stdin; it is never passed as a command-line argument.
 Bootstrap defaults to Let's Encrypt's production ACME directory. `--acme-email` is optional; `--acme-directory` and `--acme-ca-bundle` support alternate ACME servers and their CA trust bundle. The host enables `gci-renew.timer`, which runs daily to retry ACME issuance and renew expiring certificates.
+
+Run a CI job after deploying the CLI and configuring its server:
+
+```yaml
+- name: Run tests
+  run: gci run test
+```
 
 ### Clean builds in GitHub Actions
 

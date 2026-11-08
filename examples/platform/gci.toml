@@ -41,8 +41,18 @@ image = "web"
 command = "python3 server.py"
 port = 8080
 health = "/healthz"
-depends_on = ["postgres", "clickhouse"]
-migrate = "python3 server.py migrate"
+depends_on = ["migrate", "clickhouse"]
 routes = [{ prefix = "/" }]
 env = { CLICKHOUSE_URL = "http://clickhouse.platform.internal:8123" }
 secrets = { DATABASE_URL = "database-url" }
+
+[jobs.migrate]
+image = "web"
+run = "python3 server.py migrate"
+depends_on = ["postgres"]
+env = { CLICKHOUSE_URL = "http://clickhouse.platform.internal:8123" }
+secrets = { DATABASE_URL = "database-url" }
+
+[jobs.test]
+image = "web"
+run = "python3 -c 'print(\"platform check passed\")'"

@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -49,6 +51,29 @@ func init() {
 				return fmt.Errorf("plan has no config")
 			}
 			return host.Apply(cmd.Context(), cmd.OutOrStdout(), plan)
+		},
+	}
+
+	runJob := &cobra.Command{
+		Use:  "run-job",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			var plan host.RunPlan
+			reader := bufio.NewReader(os.Stdin)
+			raw, err := reader.ReadBytes('\n')
+			if err != nil && err != io.EOF {
+				return fmt.Errorf("read run plan: %w", err)
+			}
+			if err := json.Unmarshal(raw, &plan); err != nil {
+				return fmt.Errorf("read run plan: %w", err)
+			}
+			ctx, cancel := context.WithCancel(cmd.Context())
+			defer cancel()
+			go func() {
+				_, _ = io.Copy(io.Discard, reader)
+				cancel()
+			}()
+			return host.RunJob(ctx, cmd.OutOrStdout(), plan)
 		},
 	}
 
@@ -149,6 +174,6 @@ func init() {
 		},
 	}
 
-	agent.AddCommand(bootstrap, renew, apply, hasSource, receive, status, logs, rm, secretSet, secretList, secretRemove, firewall)
+	agent.AddCommand(bootstrap, renew, apply, runJob, hasSource, receive, status, logs, rm, secretSet, secretList, secretRemove, firewall)
 	rootCmd.AddCommand(agent)
 }

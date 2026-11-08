@@ -110,6 +110,31 @@ func resolveSecrets(app string, svc *config.Service) (map[string]string, error) 
 	return values, nil
 }
 
+func resolveJobSecrets(app string, job *config.Job) (map[string]string, error) {
+	if err := config.ValidateAppName(app); err != nil {
+		return nil, err
+	}
+	values := make(map[string]string, len(job.Secrets))
+	var missing []string
+	for _, env := range sortedKeys(job.Secrets) {
+		name := job.Secrets[env]
+		value, err := os.ReadFile(secretPath(app, name))
+		if os.IsNotExist(err) {
+			missing = append(missing, name)
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		values[env] = string(value)
+	}
+	if len(missing) != 0 {
+		sort.Strings(missing)
+		return nil, fmt.Errorf("missing secrets: %s", strings.Join(uniqueStrings(missing), ", "))
+	}
+	return values, nil
+}
+
 func secretDigest(values map[string]string) (string, error) {
 	if len(values) == 0 {
 		sum := sha256.Sum256(nil)

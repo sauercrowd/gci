@@ -89,7 +89,6 @@ func TestValidate(t *testing.T) {
 		"step run is required":             `app = "a"` + "\n[images.a]\nsteps = [{ name = \"deps\", run = \"  \" }]\n[services.a]\nimage = \"a\"\ncommand = \"x\"",
 		"carry_over":                       `app = "a"` + "\n[images.a]\ncarry_over = \"missing\"\nsteps = [{ name = \"deps\", run = \"true\" }]\n[services.a]\nimage = \"a\"\ncommand = \"x\"",
 		"image \"a\": environment":         `app = "a"` + "\n[images.a]\nenv = { \"bad-env\" = \"value\" }\n[services.a]\nimage = \"a\"\ncommand = \"x\"",
-		"migrate must not be blank":        `app = "a"` + "\n[images.a]\n[services.a]\nimage = \"a\"\ncommand = \"x\"\nmigrate = \"   \"",
 		"restart must be":                  `app = "a"` + "\n[images.a]\n[services.a]\nimage = \"a\"\ncommand = \"x\"\nrestart = \"sometimes\"",
 		"health_command must not be blank": `app = "a"` + "\n[images.a]\n[services.a]\nimage = \"a\"\ncommand = \"x\"\nhealth_command = \"   \"",
 		"strict mode":                      `app = "a"` + "\n[images.a]\nunknown = \"value\"\n[services.a]\nimage = \"a\"\ncommand = \"x\"",
@@ -242,35 +241,170 @@ command = "worker"
 	}
 }
 
-func TestMigrateWithVolumesIsAllowed(t *testing.T) {
-	cfg, err := Load(write(t, `
-app = "demo"
+func TestJobValidation(t *testing.T) {
+	base := `app = "demo"
+[images.app]
+[services.web]
+image = "app"
+command = "server"
+`
+	cases := map[string]string{
+		"job \"Bad_Name\" must match":                `app = "demo"` + "\n[images.app]\n[services.web]\nimage = \"app\"\ncommand = \"server\"\n[jobs.Bad_Name]\nimage = \"app\"\nrun = \"true\"",
+		"both a service and a job":                   base + "\n[jobs.web]\nimage = \"app\"\nrun = \"true\"",
+		"job \"test\": image is required":            base + "\n[jobs.test]\nrun = \"true\"",
+		"job \"test\": unknown image":                base + "\n[jobs.test]\nimage = \"missing\"\nrun = \"true\"",
+		"job \"test\": run is required":              base + "\n[jobs.test]\nimage = \"app\"\nrun = \"  \"",
+		"job \"test\": timeout must not be negative": base + "\n[jobs.test]\nimage = \"app\"\nrun = \"true\"\ntimeout = -1",
+		"job \"test\": environment variable":         base + "\n[jobs.test]\nimage = \"app\"\nrun = \"true\"\nenv = { \"bad-env\" = \"x\" }",
+		"job \"test\": secret environment variable":  base + "\n[jobs.test]\nimage = \"app\"\nrun = \"true\"\nsecrets = { \"bad-env\" = \"token\" }",
+		"job \"test\": secret name":                  base + "\n[jobs.test]\nimage = \"app\"\nrun = \"true\"\nsecrets = { TOKEN = \"Bad_Name\" }",
+		"also defined in env":                        base + "\n[jobs.test]\nimage = \"app\"\nrun = \"true\"\nenv = { TOKEN = \"x\" }\nsecrets = { TOKEN = \"token\" }",
+		"depends on unknown service or job":          base + "\n[jobs.test]\nimage = \"app\"\nrun = \"true\"\ndepends_on = [\"missing\"]",
+		"not owned by a service":                     base + "\n[jobs.test]\nimage = \"app\"\nrun = \"true\"\nvolumes = { missing = \"/data\" }",
+		"path must be absolute":                      `app = "demo"` + "\n[images.app]\n[services.web]\nimage = \"app\"\ncommand = \"server\"\nvolumes = { data = \"/data\" }\ndepends_on = [\"test\"]\n[jobs.test]\nimage = \"app\"\nrun = \"true\"\nvolumes = { data = \"relative\" }",
+		"owning service":                             `app = "demo"` + "\n[images.app]\n[services.web]\nimage = \"app\"\ncommand = \"server\"\nvolumes = { data = \"/data\" }\n[jobs.test]\nimage = \"app\"\nrun = \"true\"\nvolumes = { data = \"/data\" }",
+		"must belong to the same service": `app = "demo"
 [images.app]
 [services.db]
 image = "app"
-command = "postgres"
-migrate = "migrate"
-volumes = { data = "/var/lib/data" }
-`))
-	if err != nil {
-		t.Fatalf("migrate with volumes: %v", err)
+command = "db"
+volumes = { dbdata = "/data" }
+[services.cache]
+image = "app"
+command = "cache"
+volumes = { cachedata = "/cache" }
+[services.web]
+image = "app"
+command = "web"
+depends_on = ["migrate"]
+[jobs.migrate]
+image = "app"
+run = "true"
+volumes = { dbdata = "/data", cachedata = "/cache" }
+`,
+		"service \"web\" may not depend on volume job": `app = "demo"
+[images.app]
+[services.db]
+image = "app"
+command = "db"
+volumes = { data = "/data" }
+depends_on = ["migrate"]
+[services.web]
+image = "app"
+command = "web"
+depends_on = ["migrate"]
+[jobs.migrate]
+image = "app"
+run = "true"
+volumes = { data = "/data" }
+`,
+		"job \"other\" may not depend on volume job": `app = "demo"
+[images.app]
+[services.db]
+image = "app"
+command = "db"
+volumes = { data = "/data" }
+depends_on = ["migrate"]
+[jobs.migrate]
+image = "app"
+run = "true"
+volumes = { data = "/data" }
+[jobs.other]
+image = "app"
+run = "true"
+depends_on = ["migrate"]
+`,
 	}
-	if !cfg.Services["db"].Stateful() {
-		t.Fatal("service with volumes is not stateful")
+	for want, content := range cases {
+		_, err := Load(write(t, content))
+		if err == nil || !strings.Contains(strings.ToLower(err.Error()), strings.ToLower(want)) {
+			t.Errorf("%q: got %v", want, err)
+		}
 	}
 }
 
-func TestMigrateCommandMustNotBeBlank(t *testing.T) {
+func TestJobsOnlyConfigAndTimeoutDefault(t *testing.T) {
+	cfg, err := Load(write(t, `
+app = "checks"
+[images.test]
+[jobs.test]
+image = "test"
+run = "true"
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Jobs["test"].Timeout != 600 {
+		t.Fatalf("timeout = %d, want 600", cfg.Jobs["test"].Timeout)
+	}
+	if got := cfg.DeployJobs(); len(got) != 0 {
+		t.Fatalf("deploy jobs = %v, want none", got)
+	}
+	if got := cfg.DeployImages(); len(got) != 0 {
+		t.Fatalf("deploy images = %v, want none", got)
+	}
+	if got := cfg.ReferencedImages(); !reflect.DeepEqual(got, []string{"test"}) {
+		t.Fatalf("referenced images = %v", got)
+	}
+}
+
+func TestUnifiedOrderAndDeployImages(t *testing.T) {
+	cfg, err := Load(write(t, `
+app = "demo"
+[images.web]
+[images.migrate]
+[images.test]
+[services.web]
+image = "web"
+command = "server"
+depends_on = ["migrate"]
+[services.db]
+image = "web"
+command = "db"
+[jobs.migrate]
+image = "migrate"
+run = "migrate"
+depends_on = ["db"]
+[jobs.test]
+image = "test"
+run = "test"
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	order, err := cfg.Order()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"db", "migrate", "test", "web"}; !reflect.DeepEqual(order, want) {
+		t.Fatalf("order = %v, want %v", order, want)
+	}
+	if got := cfg.DeployJobs(); !reflect.DeepEqual(got, []string{"migrate"}) {
+		t.Fatalf("deploy jobs = %v", got)
+	}
+	if got := cfg.DeployImages(); !reflect.DeepEqual(got, []string{"migrate", "web"}) {
+		t.Fatalf("deploy images = %v", got)
+	}
+	if got := cfg.ReferencedImages(); !reflect.DeepEqual(got, []string{"migrate", "test", "web"}) {
+		t.Fatalf("referenced images = %v", got)
+	}
+}
+
+func TestDependencyCycleThroughJob(t *testing.T) {
 	_, err := Load(write(t, `
 app = "demo"
 [images.app]
 [services.web]
 image = "app"
 command = "server"
-migrate = "   "
+depends_on = ["check"]
+[jobs.check]
+image = "app"
+run = "true"
+depends_on = ["web"]
 `))
-	if err == nil || !strings.Contains(err.Error(), "migrate must not be blank") {
-		t.Fatalf("blank migrate error = %v", err)
+	if err == nil || !strings.Contains(err.Error(), "dependency cycle") {
+		t.Fatalf("cycle error = %v", err)
 	}
 }
 

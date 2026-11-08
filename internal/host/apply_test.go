@@ -42,6 +42,19 @@ func TestValidateRestartNames(t *testing.T) {
 	}
 }
 
+func TestShouldDeleteJobOrphan(t *testing.T) {
+	inst := instance{Config: map[string]string{"user.gci.app": "demo", "user.gci.role": "job"}}
+	if shouldDeleteJobOrphan(inst, "demo", true) {
+		t.Fatal("leased job should be kept")
+	}
+	if !shouldDeleteJobOrphan(inst, "demo", false) {
+		t.Fatal("unleased job should be deleted")
+	}
+	if shouldDeleteJobOrphan(inst, "shop", false) {
+		t.Fatal("job from another app should be kept")
+	}
+}
+
 func TestShouldDeleteOrphanScopesLegacyDepsToApp(t *testing.T) {
 	keep := map[string]bool{"gci-demo-web-r1234567": true}
 	tests := []struct {

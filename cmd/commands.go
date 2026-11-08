@@ -2,7 +2,9 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -98,24 +100,9 @@ func init() {
 			}
 			ctx := cmd.Context()
 			plan := host.Plan{Config: cfg, Sources: map[string]string{}, Clean: clean || cleanEnabled(os.Getenv("GCI_CLEAN")), Restart: restart}
-			for _, imageName := range cfg.ReferencedImages() {
-				image := cfg.Images[imageName]
-				if image.Source == "" {
-					continue
-				}
-				tarball, hash, err := remote.PackSource(image.Source)
-				if err != nil {
-					return fmt.Errorf("%s: pack %s: %w", imageName, image.Source, err)
-				}
-				plan.Sources[imageName] = hash
-				var out bytes.Buffer
-				if err := h.Agent(ctx, []string{"has-source", cfg.App, imageName, hash}, nil, &out, io.Discard); err == nil {
-					continue
-				}
-				fmt.Fprintf(cmd.OutOrStdout(), "==> %s: uploading source %s (%d KiB)\n", imageName, hash, len(tarball)/1024)
-				if err := h.Agent(ctx, []string{"receive-source", cfg.App, imageName, hash}, bytes.NewReader(tarball), cmd.OutOrStdout(), cmd.ErrOrStderr()); err != nil {
-					return fmt.Errorf("%s: upload source: %w", imageName, err)
-				}
+			plan.Sources, err = uploadImageSources(ctx, cmd, h, cfg, cfg.DeployImages())
+			if err != nil {
+				return err
 			}
 			raw, err := json.Marshal(plan)
 			if err != nil {
@@ -126,6 +113,42 @@ func init() {
 	}
 	deploy.Flags().BoolVar(&clean, "clean", false, "rebuild images from a fresh base")
 	deploy.Flags().StringSliceVar(&restart, "restart", nil, "apply pending changes to a manual service; unchanged services stay unchanged")
+
+	var runClean bool
+	run := &cobra.Command{
+		Use:   "run <job>",
+		Short: "Run one job without running its dependencies",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, h, err := project(cmd, true)
+			if err != nil {
+				return err
+			}
+			defer h.Close()
+			job, ok := cfg.Jobs[args[0]]
+			if !ok {
+				return fmt.Errorf("unknown job %q", args[0])
+			}
+			if len(job.Volumes) > 0 {
+				owner := jobVolumeOwner(cfg, job)
+				return fmt.Errorf("job %q uses volumes of service %q; it only runs during %s's rollout", args[0], owner, owner)
+			}
+			sources, err := uploadImageSources(cmd.Context(), cmd, h, cfg, []string{job.Image})
+			if err != nil {
+				return err
+			}
+			raw, err := json.Marshal(host.RunPlan{
+				Config: cfg, Sources: sources, Job: args[0],
+				Clean: runClean || cleanEnabled(os.Getenv("GCI_CLEAN")),
+			})
+			if err != nil {
+				return err
+			}
+			err = h.Agent(cmd.Context(), []string{"run-job"}, bytes.NewReader(raw), cmd.OutOrStdout(), cmd.ErrOrStderr())
+			return preserveJobExitCode(err)
+		},
+	}
+	run.Flags().BoolVar(&runClean, "clean", false, "rebuild the job image from a fresh base")
 
 	status := &cobra.Command{
 		Use:   "status",
@@ -240,7 +263,55 @@ func init() {
 		},
 	}
 	secret.AddCommand(secretSet, secretList, secretRemove)
-	rootCmd.AddCommand(bootstrap, deploy, status, logs, rm, secret)
+	rootCmd.AddCommand(bootstrap, deploy, run, status, logs, rm, secret)
+}
+
+func uploadImageSources(ctx context.Context, cmd *cobra.Command, h *remote.Host, cfg *config.Config, images []string) (map[string]string, error) {
+	sources := make(map[string]string, len(images))
+	for _, imageName := range images {
+		image := cfg.Images[imageName]
+		if image.Source == "" {
+			continue
+		}
+		tarball, hash, err := remote.PackSource(image.Source)
+		if err != nil {
+			return nil, fmt.Errorf("%s: pack %s: %w", imageName, image.Source, err)
+		}
+		sources[imageName] = hash
+		var out bytes.Buffer
+		if err := h.Agent(ctx, []string{"has-source", cfg.App, imageName, hash}, nil, &out, io.Discard); err == nil {
+			continue
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "==> %s: uploading source %s (%d KiB)\n", imageName, hash, len(tarball)/1024)
+		if err := h.Agent(ctx, []string{"receive-source", cfg.App, imageName, hash}, bytes.NewReader(tarball), cmd.OutOrStdout(), cmd.ErrOrStderr()); err != nil {
+			return nil, fmt.Errorf("%s: upload source: %w", imageName, err)
+		}
+	}
+	return sources, nil
+}
+
+func preserveJobExitCode(err error) error {
+	var agentExit *remote.AgentExitError
+	if errors.As(err, &agentExit) {
+		return &host.JobExitError{Code: agentExit.Code}
+	}
+	return err
+}
+
+func jobVolumeOwner(cfg *config.Config, job *config.Job) string {
+	for name, svc := range cfg.Services {
+		owns := true
+		for volume := range job.Volumes {
+			if _, ok := svc.Volumes[volume]; !ok {
+				owns = false
+				break
+			}
+		}
+		if owns {
+			return name
+		}
+	}
+	return ""
 }
 
 func cleanEnabled(value string) bool {

@@ -28,6 +28,7 @@ type Config struct {
 	Nixpkgs  string              `toml:"nixpkgs,omitempty" json:"nixpkgs"`
 	Images   map[string]*Image   `toml:"images" json:"images"`
 	Services map[string]*Service `toml:"services" json:"services"`
+	Jobs     map[string]*Job     `toml:"jobs" json:"jobs"`
 }
 
 type Image struct {
@@ -46,7 +47,6 @@ type Step struct {
 
 type Service struct {
 	Image         string            `toml:"image" json:"image"`
-	Migrate       string            `toml:"migrate,omitempty" json:"migrate,omitempty"`
 	Restart       string            `toml:"restart,omitempty" json:"restart,omitempty"`
 	Command       string            `toml:"command" json:"command"`
 	Setup         string            `toml:"setup,omitempty" json:"setup,omitempty"`
@@ -62,6 +62,18 @@ type Service struct {
 	Memory        string            `toml:"memory,omitempty" json:"memory,omitempty"`
 	// HealthTimeout is in seconds.
 	HealthTimeout int `toml:"health_timeout,omitempty" json:"health_timeout"`
+}
+
+type Job struct {
+	Image     string            `toml:"image" json:"image"`
+	Run       string            `toml:"run" json:"run"`
+	Env       map[string]string `toml:"env,omitempty" json:"env,omitempty"`
+	Secrets   map[string]string `toml:"secrets,omitempty" json:"secrets,omitempty"`
+	Volumes   map[string]string `toml:"volumes,omitempty" json:"volumes,omitempty"`
+	DependsOn []string          `toml:"depends_on,omitempty" json:"depends_on,omitempty"`
+	CPU       string            `toml:"cpu,omitempty" json:"cpu,omitempty"`
+	Memory    string            `toml:"memory,omitempty" json:"memory,omitempty"`
+	Timeout   int               `toml:"timeout,omitempty" json:"timeout"`
 }
 
 type Route struct {
@@ -138,6 +150,11 @@ func (c *Config) applyDefaults() {
 			}
 		}
 	}
+	for _, job := range c.Jobs {
+		if job != nil && job.Timeout == 0 {
+			job.Timeout = 600
+		}
+	}
 }
 
 func (c *Config) Validate() error {
@@ -145,8 +162,8 @@ func (c *Config) Validate() error {
 	if err := ValidateAppName(c.App); err != nil {
 		return err
 	}
-	if len(c.Services) == 0 {
-		return fmt.Errorf("at least one [services.<name>] is required")
+	if len(c.Services) == 0 && len(c.Jobs) == 0 {
+		return fmt.Errorf("at least one [services.<name>] or [jobs.<name>] is required")
 	}
 	for name, image := range c.Images {
 		if image == nil {
@@ -201,14 +218,6 @@ func (c *Config) Validate() error {
 		case "auto", "manual":
 		default:
 			return fmt.Errorf("service %q: restart must be \"auto\" or \"manual\"", name)
-		}
-		for _, dep := range svc.DependsOn {
-			if _, ok := c.Services[dep]; !ok {
-				return fmt.Errorf("service %q depends on unknown service %q", name, dep)
-			}
-		}
-		if strings.TrimSpace(svc.Migrate) == "" && svc.Migrate != "" {
-			return fmt.Errorf("service %q: migrate must not be blank", name)
 		}
 		for env := range svc.Env {
 			if !envNameRe.MatchString(env) {
@@ -277,6 +286,112 @@ func (c *Config) Validate() error {
 			volumeOwner[vol] = name
 		}
 	}
+	for name, job := range c.Jobs {
+		if job == nil {
+			return fmt.Errorf("job %q is required", name)
+		}
+		if !nameRe.MatchString(name) {
+			return fmt.Errorf("job %q must match %s", name, nameRe)
+		}
+		if _, ok := c.Services[name]; ok {
+			return fmt.Errorf("%q is both a service and a job", name)
+		}
+		if job.Image == "" {
+			return fmt.Errorf("job %q: image is required", name)
+		}
+		if _, ok := c.Images[job.Image]; !ok {
+			return fmt.Errorf("job %q: unknown image %q", name, job.Image)
+		}
+		if strings.TrimSpace(job.Run) == "" {
+			return fmt.Errorf("job %q: run is required", name)
+		}
+		if job.Timeout < 0 {
+			return fmt.Errorf("job %q: timeout must not be negative", name)
+		}
+		for env := range job.Env {
+			if !envNameRe.MatchString(env) {
+				return fmt.Errorf("job %q: environment variable %q is invalid", name, env)
+			}
+		}
+		for env, secret := range job.Secrets {
+			if !envNameRe.MatchString(env) {
+				return fmt.Errorf("job %q: secret environment variable %q is invalid", name, env)
+			}
+			if !secretNameRe.MatchString(secret) {
+				return fmt.Errorf("job %q: secret name %q is invalid", name, secret)
+			}
+			if _, ok := job.Env[env]; ok {
+				return fmt.Errorf("job %q: secret environment variable %q is also defined in env", name, env)
+			}
+		}
+		owner := ""
+		for vol, path := range job.Volumes {
+			if !nameRe.MatchString(vol) {
+				return fmt.Errorf("job %q: volume %q must match %s", name, vol, nameRe)
+			}
+			if !strings.HasPrefix(path, "/") {
+				return fmt.Errorf("job %q: volume %q path must be absolute", name, vol)
+			}
+			service, ok := volumeOwner[vol]
+			if !ok {
+				return fmt.Errorf("job %q: volume %q is not owned by a service", name, vol)
+			}
+			if owner != "" && owner != service {
+				return fmt.Errorf("job %q: volumes must belong to the same service", name)
+			}
+			owner = service
+		}
+		if owner != "" {
+			depends := false
+			for _, dep := range c.Services[owner].DependsOn {
+				depends = depends || dep == name
+			}
+			if !depends {
+				return fmt.Errorf("job %q: owning service %q must depend on the volume job", name, owner)
+			}
+		}
+	}
+	for name, svc := range c.Services {
+		for _, dep := range svc.DependsOn {
+			if _, ok := c.Services[dep]; !ok {
+				if _, ok := c.Jobs[dep]; !ok {
+					return fmt.Errorf("service %q depends on unknown service or job %q", name, dep)
+				}
+			}
+		}
+	}
+	for name, job := range c.Jobs {
+		for _, dep := range job.DependsOn {
+			if _, ok := c.Services[dep]; !ok {
+				if _, ok := c.Jobs[dep]; !ok {
+					return fmt.Errorf("job %q depends on unknown service or job %q", name, dep)
+				}
+			}
+		}
+	}
+	volumeJobOwners := map[string]string{}
+	for name, job := range c.Jobs {
+		if len(job.Volumes) == 0 {
+			continue
+		}
+		for vol := range job.Volumes {
+			volumeJobOwners[name] = volumeOwner[vol]
+		}
+	}
+	for name, svc := range c.Services {
+		for _, dep := range svc.DependsOn {
+			if owner, ok := volumeJobOwners[dep]; ok && owner != name {
+				return fmt.Errorf("service %q may not depend on volume job %q owned by %q", name, dep, owner)
+			}
+		}
+	}
+	for name, job := range c.Jobs {
+		for _, dep := range job.DependsOn {
+			if _, ok := volumeJobOwners[dep]; ok {
+				return fmt.Errorf("job %q may not depend on volume job %q", name, dep)
+			}
+		}
+	}
 	routeOwners := map[string]string{}
 	hostTLS := map[string]Route{}
 	for _, name := range sortedServiceNames(c.Services) {
@@ -322,11 +437,64 @@ func sortedServiceNames(services map[string]*Service) []string {
 	return names
 }
 
-func (c *Config) ReferencedImages() []string {
+func (c *Config) DeployJobs() []string {
+	reachable := map[string]bool{}
+	visited := map[string]bool{}
+	var visit func(string)
+	visit = func(name string) {
+		if visited[name] {
+			return
+		}
+		visited[name] = true
+		if job := c.Jobs[name]; job != nil {
+			reachable[name] = true
+			for _, dep := range job.DependsOn {
+				visit(dep)
+			}
+			return
+		}
+		if svc := c.Services[name]; svc != nil {
+			for _, dep := range svc.DependsOn {
+				visit(dep)
+			}
+		}
+	}
+	for _, name := range sortedServiceNames(c.Services) {
+		visit(name)
+	}
+	order, _ := c.Order()
+	var names []string
+	for _, name := range order {
+		if reachable[name] {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+func (c *Config) DeployImages() []string {
 	seen := make(map[string]bool, len(c.Services))
 	for _, svc := range c.Services {
 		seen[svc.Image] = true
 	}
+	for _, name := range c.DeployJobs() {
+		seen[c.Jobs[name].Image] = true
+	}
+	return sortedImageNames(seen)
+}
+
+func (c *Config) ReferencedImages() []string {
+	seen := make(map[string]bool, len(c.Services)+len(c.Jobs))
+	for _, svc := range c.Services {
+		seen[svc.Image] = true
+	}
+	for _, job := range c.Jobs {
+		seen[job.Image] = true
+	}
+	return sortedImageNames(seen)
+}
+
+func sortedImageNames(seen map[string]bool) []string {
 	names := make([]string, 0, len(seen))
 	for name := range seen {
 		names = append(names, name)
@@ -349,11 +517,17 @@ func ValidateSecretName(name string) error {
 	return nil
 }
 
-// Order returns service names topologically sorted by depends_on (ties broken by name).
+// Order returns service and job names topologically sorted by depends_on.
 func (c *Config) Order() ([]string, error) {
-	names := make([]string, 0, len(c.Services))
+	dependencies := make(map[string][]string, len(c.Services)+len(c.Jobs))
+	names := make([]string, 0, len(c.Services)+len(c.Jobs))
 	for n := range c.Services {
 		names = append(names, n)
+		dependencies[n] = append([]string(nil), c.Services[n].DependsOn...)
+	}
+	for n := range c.Jobs {
+		names = append(names, n)
+		dependencies[n] = append([]string(nil), c.Jobs[n].DependsOn...)
 	}
 	sort.Strings(names)
 	var out []string
@@ -367,9 +541,8 @@ func (c *Config) Order() ([]string, error) {
 			return nil
 		}
 		state[n] = 1
-		deps := append([]string(nil), c.Services[n].DependsOn...)
-		sort.Strings(deps)
-		for _, d := range deps {
+		sort.Strings(dependencies[n])
+		for _, d := range dependencies[n] {
 			if err := visit(d, append(path, n)); err != nil {
 				return err
 			}
