@@ -302,10 +302,11 @@ func revisionWithSecrets(cfg *config.Config, name, env, releaseKey, secretsHash 
 func revisionWithRelease(cfg *config.Config, name, env, releaseKey, secretsHash string, releaseCreated time.Time) string {
 	svc := *cfg.Services[name]
 	svc.Routes = nil // routing changes do not require a new container
-	image := cfg.Images[svc.Image]
+	image := *cfg.Images[svc.Image]
+	image.Source = ""
 	raw, _ := json.Marshal(struct {
 		Svc            config.Service
-		Image          *config.Image
+		Image          config.Image
 		Env            string
 		Release        string
 		ReleaseCreated time.Time
