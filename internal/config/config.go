@@ -25,21 +25,28 @@ type Config struct {
 	App      string              `toml:"app" json:"app"`
 	Server   string              `toml:"server,omitempty" json:"server,omitempty"`
 	Nixpkgs  string              `toml:"nixpkgs,omitempty" json:"nixpkgs"`
+	Images   map[string]*Image   `toml:"images" json:"images"`
 	Services map[string]*Service `toml:"services" json:"services"`
 }
 
+type Image struct {
+	Packages     []string          `toml:"packages,omitempty" json:"packages,omitempty"`
+	User         string            `toml:"user,omitempty" json:"user"`
+	Source       string            `toml:"source,omitempty" json:"source,omitempty"`
+	Env          map[string]string `toml:"env,omitempty" json:"env,omitempty"`
+	SnapshotStep string            `toml:"snapshot_step,omitempty" json:"snapshot_step,omitempty"`
+	Steps        []Step            `toml:"steps,omitempty" json:"steps,omitempty"`
+}
+
+type Step struct {
+	Name string `toml:"name,omitempty" json:"name,omitempty"`
+	Run  string `toml:"run" json:"run"`
+}
+
 type Service struct {
-	// Packages are Nix expressions evaluated with nixpkgs in scope,
-	// e.g. "postgresql_16" or "python3.withPackages (p: [p.psycopg])".
-	Packages []string `toml:"packages" json:"packages"`
-	// Source is a local directory shipped to the host and snapshotted at /app.
-	Source    string            `toml:"source,omitempty" json:"source,omitempty"`
-	Install   string            `toml:"install,omitempty" json:"install,omitempty"`
-	Build     string            `toml:"build,omitempty" json:"build,omitempty"`
-	Reuse     string            `toml:"reuse,omitempty" json:"reuse,omitempty"`
+	Image     string            `toml:"image" json:"image"`
 	Command   string            `toml:"command" json:"command"`
 	Setup     string            `toml:"setup,omitempty" json:"setup,omitempty"`
-	User      string            `toml:"user,omitempty" json:"user"`
 	Env       map[string]string `toml:"env,omitempty" json:"env,omitempty"`
 	Secrets   map[string]string `toml:"secrets,omitempty" json:"secrets,omitempty"`
 	Port      int               `toml:"port,omitempty" json:"port,omitempty"`
@@ -77,9 +84,9 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	base := filepath.Dir(path)
-	for _, svc := range cfg.Services {
-		if svc.Source != "" && !filepath.IsAbs(svc.Source) {
-			svc.Source = filepath.Join(base, svc.Source)
+	for _, image := range cfg.Images {
+		if image.Source != "" && !filepath.IsAbs(image.Source) {
+			image.Source = filepath.Join(base, image.Source)
 		}
 	}
 	return &cfg, nil
@@ -89,12 +96,18 @@ func (c *Config) applyDefaults() {
 	if c.Nixpkgs == "" {
 		c.Nixpkgs = DefaultNixpkgs
 	}
-	for _, svc := range c.Services {
-		if svc.User == "" {
-			svc.User = "gci"
+	for name, image := range c.Images {
+		if image == nil {
+			image = &Image{}
+			c.Images[name] = image
 		}
-		if svc.Reuse == "" {
-			svc.Reuse = "dependencies"
+		if image.User == "" {
+			image.User = "gci"
+		}
+	}
+	for _, svc := range c.Services {
+		if svc == nil {
+			continue
 		}
 		if svc.HealthTimeout == 0 {
 			svc.HealthTimeout = 120
@@ -117,10 +130,51 @@ func (c *Config) Validate() error {
 	if len(c.Services) == 0 {
 		return fmt.Errorf("at least one [services.<name>] is required")
 	}
+	for name, image := range c.Images {
+		if image == nil {
+			return fmt.Errorf("image %q is required", name)
+		}
+		if !nameRe.MatchString(name) {
+			return fmt.Errorf("image %q must match %s", name, nameRe)
+		}
+		for env := range image.Env {
+			if !envNameRe.MatchString(env) {
+				return fmt.Errorf("image %q: environment variable %q is invalid", name, env)
+			}
+		}
+		stepNames := map[string]bool{}
+		for _, step := range image.Steps {
+			if strings.TrimSpace(step.Run) == "" {
+				return fmt.Errorf("image %q: step run is required", name)
+			}
+			if step.Name == "" {
+				continue
+			}
+			if !nameRe.MatchString(step.Name) {
+				return fmt.Errorf("image %q: step name %q must match %s", name, step.Name, nameRe)
+			}
+			if stepNames[step.Name] {
+				return fmt.Errorf("image %q: duplicate step name %q", name, step.Name)
+			}
+			stepNames[step.Name] = true
+		}
+		if image.SnapshotStep != "" && !stepNames[image.SnapshotStep] {
+			return fmt.Errorf("image %q: snapshot_step %q does not name a step", name, image.SnapshotStep)
+		}
+	}
 	volumeOwner := map[string]string{}
 	for name, svc := range c.Services {
+		if svc == nil {
+			return fmt.Errorf("service %q is required", name)
+		}
 		if !nameRe.MatchString(name) {
 			return fmt.Errorf("service %q must match %s", name, nameRe)
+		}
+		if svc.Image == "" {
+			return fmt.Errorf("service %q: image is required", name)
+		}
+		if _, ok := c.Images[svc.Image]; !ok {
+			return fmt.Errorf("service %q: unknown image %q", name, svc.Image)
 		}
 		if strings.TrimSpace(svc.Command) == "" {
 			return fmt.Errorf("service %q: command is required", name)
@@ -129,12 +183,6 @@ func (c *Config) Validate() error {
 			if _, ok := c.Services[dep]; !ok {
 				return fmt.Errorf("service %q depends on unknown service %q", name, dep)
 			}
-		}
-		if svc.Reuse != "dependencies" && svc.Reuse != "build" && svc.Reuse != "nothing" {
-			return fmt.Errorf("service %q: reuse must be dependencies, build, or nothing", name)
-		}
-		if (svc.Install != "" || svc.Build != "") && svc.Source == "" {
-			return fmt.Errorf("service %q: install and build require source", name)
 		}
 		for env := range svc.Env {
 			if !envNameRe.MatchString(env) {
@@ -181,6 +229,19 @@ func (c *Config) Validate() error {
 	}
 	_, err := c.Order()
 	return err
+}
+
+func (c *Config) ReferencedImages() []string {
+	seen := make(map[string]bool, len(c.Services))
+	for _, svc := range c.Services {
+		seen[svc.Image] = true
+	}
+	names := make([]string, 0, len(seen))
+	for name := range seen {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 func ValidateAppName(name string) error {

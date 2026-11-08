@@ -31,7 +31,7 @@ func TestWriteStarterConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("starter config does not load: %v", err)
 	}
-	if cfg.App != "shop" || cfg.Services["web"] == nil {
+	if cfg.App != "shop" || cfg.Images["web"] == nil || cfg.Services["web"] == nil || cfg.Services["web"].Image != "web" {
 		t.Fatalf("unexpected config: %+v", cfg)
 	}
 	if err := os.WriteFile(path, []byte("keep"), 0o644); err != nil {
