@@ -20,6 +20,9 @@ app = "%[1]s"
 [services.web]
 packages = ["nodejs_22"]   # Nix packages (nixpkgs attribute names)
 command = "node server.js"
+port = 8080
+health = "/healthz"        # HTTP check before Envoy switches traffic
+routes = [{ host = "%[1]s.localhost", prefix = "/" }]
 # env = { NODE_ENV = "production" }
 `
 
